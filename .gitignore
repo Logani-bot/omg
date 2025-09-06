@@ -1,0 +1,33 @@
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 가상환경
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter Notebook 체크포인트
+.ipynb_checkpoints
+
+# ---- OS & IDE ----
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# VS Code
+.vscode/
+
+# ---- 환경파일/비밀정보 ----
+*.env
+.env
+
+# ---- 로그/캐시 ----
+*.log
+*.sqlite3
