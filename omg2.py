@@ -22,7 +22,7 @@ OMG Phase 1 — Coin Top50 데일리 감시 (5년 '고가' + 사이클 고점 �
     pip install requests openpyxl
 
 Author: GPT
-Version: 1.5.0
+Version: 1.5.1  # 0906 17:56 cycle-high: high-mode uses cand_H then -44% by low
 """
 from __future__ import annotations
 import time
@@ -197,17 +197,16 @@ def compute_cycle_high(highs: List[float], lows: List[float]) -> Optional[float]
         lo = lows[i]      # L 갱신은 low
 
         if mode == "high":
-            # -44% 이탈 → wait (H 유지, L을 당일 low로 재설정)
-            if H is not None and p <= H * 0.56:
+            # 1) 당일 고가를 반영한 후보 고점
+            cand_H = p if (H is None or (p is not None and p > H)) else H
+            # 2) 저가 기준 -44% 이탈 검사 (cand_H 기준)
+            if cand_H is not None and lo is not None and lo <= cand_H * 0.56:
                 mode = "wait"
-                if lo is not None:
-                    L = lo
-                else:
-                    L = p  # low 미존재시 안전 대체
+                H = cand_H  # 당일 형성된 새 H는 보존
+                L = lo      # L은 해당 캔들의 low 로 리셋
                 continue
-            # 신고가 갱신
-            if H is None or p > H:
-                H = p
+            # 3) 이탈이 아니면 cand_H를 최종 H로 확정
+            H = cand_H
             continue
 
         # mode in {none, wait}: L은 low로 갱신
@@ -216,19 +215,19 @@ def compute_cycle_high(highs: List[float], lows: List[float]) -> Optional[float]
 
         if mode == "wait":
             # wait에서는 오직 +98.5%로만 재시작
-            if L is not None and p >= L * 1.985:
+            if L is not None and p is not None and p >= L * 1.985:
                 H = p  # 무조건 교체
                 mode = "high"
             # p > H 만으로는 갱신 금지
             continue
 
         # mode == "none"
-        if L is not None and p >= L * 1.985:
+        if L is not None and p is not None and p >= L * 1.985:
             H = p
             mode = "high"
             continue
         # (보조) 과거 H가 있고 직접 신고가
-        if H is not None and p > H:
+        if H is not None and p is not None and p > H:
             H = p
             mode = "high"
             continue
@@ -319,7 +318,7 @@ def write_excel(top_rows: List[Dict[str, Any]], level_rows: List[Dict[str, Any]]
 def debug_cycle_for_symbol(symbol: str = "DOGE", limit_days: Optional[int] = 120) -> None:
     """단일 심볼에 대해 사이클 로직을 단계별로 추적 출력.
     - L 갱신은 '저가(low)', 트리거 판정은 '고가(high)'
-    - limit_days: 최근 N일만 요약 출력(내부 계산은 전체 YEARS)
+    - high 모드는 cand_H = max(H, high) 를 먼저 확정 후, low <= 0.56*cand_H 로 -44% 판정
     - 결과 CSV: output/<symbol>_debug.csv
     """
     binance_sym = f"{symbol.upper()}USDT"
@@ -342,7 +341,7 @@ def debug_cycle_for_symbol(symbol: str = "DOGE", limit_days: Optional[int] = 120
     import csv
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["date","open","high","low","close","mode","L","H","event"])  # 헤더
+        w.writerow(["date","open","high","low","close","mode","L","H","cand_H","thr56","event"])  # cand_H/임계 포함
 
         def ts_to_date(ms: int) -> str:
             return dt.datetime.fromtimestamp(ms/1000, tz=dt.UTC).strftime("%Y-%m-%d")
@@ -354,10 +353,12 @@ def debug_cycle_for_symbol(symbol: str = "DOGE", limit_days: Optional[int] = 120
             event = ""
 
             if mode == "high":
-                if H is not None and p is not None and p <= H * 0.56:
-                    mode = "wait"; L = lo if lo is not None else p; event = "TO_WAIT_-44%"
-                elif p is not None and (H is None or p > H):
-                    H = p; event = "NEW_HIGH"
+                cand_H = p if (H is None or (p is not None and p > H)) else H
+                thr56 = None if cand_H is None else round(cand_H * 0.56, 10)
+                if cand_H is not None and lo is not None and lo <= cand_H * 0.56:
+                    mode = "wait"; H = cand_H; L = lo; event = "TO_WAIT_-44%"
+                else:
+                    H = cand_H
             else:
                 # none/wait 공통: L은 low로 갱신
                 if lo is not None and (L is None or lo < L):
@@ -365,18 +366,22 @@ def debug_cycle_for_symbol(symbol: str = "DOGE", limit_days: Optional[int] = 120
                 if mode == "wait":
                     if L is not None and p is not None and p >= L * 1.985:
                         H = p; mode = "high"; event = "RESTART_+98.5%_H=p"
+                    thr56 = None
                 else:  # none
                     if L is not None and p is not None and p >= L * 1.985:
                         H = p; mode = "high"; event = "START_+98.5%_H=p"
                     elif H is not None and p is not None and p > H:
                         H = p; mode = "high"; event = "START_BREAK_PREV_H_H=p"
+                    thr56 = None
 
             w.writerow([
                 date,
                 row["open"], row["high"], row["low"], row["close"],
                 mode,
-                (None if L is None else round(L, 6)),
-                (None if H is None else round(H, 6)),
+                (None if L is None else round(L, 10)),
+                (None if H is None else round(H, 10)),
+                (None if ('cand_H' not in locals() or cand_H is None) else round(cand_H, 10)),
+                (None if ('thr56' not in locals() or thr56 is None) else thr56),
                 event,
             ])
 
@@ -384,7 +389,14 @@ def debug_cycle_for_symbol(symbol: str = "DOGE", limit_days: Optional[int] = 120
 
     # 최근 limit_days만 요약 출력
     if limit_days:
-        print(f"[DEBUG] 최근 {limit_days}일 요약 (date, high, low, mode, L, H, event)")
+        print(f"[DEBUG] 최근 {limit_days}일 요약 (date, high, low, mode, L, H, cand_H, thr56, event)")
+        with open(csv_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()[-limit_days:]
+            for ln in lines:
+                parts = ln.strip().split(",")
+                if parts and parts[0] != "date":
+                    date, _open, high, low, _close, mode_s, Ls, Hs, candH, thr56, event = parts
+                    print(f" {date} | high={high} | low={low} | mode={mode_s} | L={Ls} | H={Hs} | cand_H={candH} | thr56={thr56} | {event}")
         with open(csv_path, "r", encoding="utf-8") as f:
             lines = f.readlines()[-limit_days:]
             for ln in lines:
