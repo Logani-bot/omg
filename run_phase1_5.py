@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Phase 1.5 Runner — Phase 1 기반
-- H(Phase 1 고점 신호) 결정 우선순위:
-  1) --phase1-csv 에서 as-of 날짜(있다면) 기준으로 'H' 컬럼을 읽음
-  2) --seed-h 사용
-  3) (예외 부트스트랩) 시작일의 고가(high)를 H로 채택
-- 시뮬레이션 규칙(코어에 구현):
-  * 매수: 저가 기준 (레벨 터치)
-  * 매도: 고가 기준 (L 대비 단계별 반등률)
-- 출력 CSV는 타임스탬프를 붙여 파일 잠금 충돌을 방지
+Phase 1.5 Runner — debug CSV의 H를 '모든 날짜'에 대해 매칭
+- 규칙:
+  * OHLC 전체(5년)를 사용
+  * debug CSV에서 날짜별 'H'를 읽어 (YYYY-MM-DD → H) 매핑 생성
+  * OHLC의 모든 날짜가 CSV에 존재해야 함(엄격). 없으면 에러 종료
+  * 코어는 각 일자마다 전달된 H로 레벨(B1~B7)을 재계산 후, 저가 매수/고가 매도 로직 수행
+- 출력 CSV는 타임스탬프를 붙여 파일 잠금 충돌 방지
 """
 
 import argparse
@@ -17,8 +15,8 @@ import csv
 import pathlib
 import sys
 import traceback
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime
+from typing import Dict, Optional, Iterable
 
 print("[RUNNER] module import start", flush=True)
 
@@ -30,47 +28,54 @@ from core.phase1_5_core import (
 print("[RUNNER] core imported OK", flush=True)
 
 
-def load_H_from_csv(csv_path: pathlib.Path,
-                    h_col: str = "H",
-                    asof: Optional[str] = None,
-                    date_col_candidates=("date", "Date", "DATE")) -> Optional[float]:
+def _yyyymmdd_from_ms(ms: int) -> str:
+    return datetime.utcfromtimestamp(ms / 1000).strftime("%Y-%m-%d")
+
+
+def _pick_date_column(headers: Iterable[str]) -> Optional[str]:
+    candidates = ["date", "Date", "DATE", "timestamp", "Timestamp", "TIME", "time"]
+    for c in candidates:
+        if c in headers:
+            return c
+    return None
+
+
+def _normalize_csv_date(s: str) -> Optional[str]:
+    if not s:
+        return None
+    t = s.strip()
+    t = t.split(" ")[0]
+    t = t.replace(".", "-").replace("/", "-")
+    try:
+        d = datetime.strptime(t, "%Y-%m-%d")
+        return d.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def load_daily_H_map(csv_path: pathlib.Path, h_col: str = "H") -> Dict[str, float]:
     """
-    Phase 1 CSV에서 최종 H를 읽어온다.
-    - cand_H는 무시. 반드시 h_col('H')만 사용.
-    - asof(YYYY-MM-DD)가 주어지면, 그 날짜 '이전/같은' 행 중 가장 최근 H를 선택.
+    debug CSV에서 날짜별 H 매핑(YYYY-MM-DD -> float)을 만든다.
+    동일 날짜가 여러 번 나오면 '아래쪽(뒤쪽)' 값을 우선한다(가장 나중 기록).
     """
-    print(f"[RUNNER] load_H_from_csv: {csv_path} (col={h_col}, asof={asof})", flush=True)
+    print(f"[RUNNER] load_daily_H_map: {csv_path} (col={h_col})", flush=True)
     with open(csv_path, "r", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
     if not rows:
-        print("[RUNNER] CSV empty", flush=True)
-        return None
+        raise RuntimeError("CSV empty")
     if h_col not in rows[0]:
-        print(f"[RUNNER] missing column '{h_col}'", flush=True)
-        return None
+        raise RuntimeError(f"CSV missing '{h_col}' column")
 
-    asof_dt = None
-    if asof:
-        asof_dt = datetime.strptime(asof, "%Y-%m-%d").date()
+    date_col = _pick_date_column(rows[0].keys())
+    if not date_col:
+        raise RuntimeError("CSV has no recognizable date column")
 
-    def row_date_ok(row):
-        if asof_dt is None:
-            return True
-        for dc in date_col_candidates:
-            if dc in row and row[dc]:
-                try:
-                    d = row[dc].split(" ")[0]
-                    rd = datetime.strptime(d, "%Y-%m-%d").date()
-                    return rd <= asof_dt
-                except Exception:
-                    continue
-        # 날짜 컬럼을 못 찾으면 보수적으로 허용
-        return True
-
-    # 아래에서 위로(최신 행부터) 스캔
+    m: Dict[str, float] = {}
+    # 아래에서 위로 스캔(뒤쪽이 우선)
     for row in reversed(rows):
-        if not row_date_ok(row):
+        d = _normalize_csv_date(str(row.get(date_col, "")))
+        if not d:
             continue
         raw = row.get(h_col, "")
         if raw is None:
@@ -80,13 +85,13 @@ def load_H_from_csv(csv_path: pathlib.Path,
             continue
         try:
             val = float(s)
-            print(f"[RUNNER] H found: column='{h_col}', value={val}", flush=True)
-            return val
         except ValueError:
             continue
-
-    print(f"[RUNNER] H not found (col='{h_col}', asof={asof})", flush=True)
-    return None
+        # 동일 날짜는 '가장 뒤쪽' 값이 최종
+        if d not in m:
+            m[d] = val
+    print(f"[RUNNER] daily H loaded: {len(m)} dates", flush=True)
+    return m
 
 
 def main():
@@ -94,16 +99,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", type=str, default="SUI")
     ap.add_argument("--limit-days", type=int, default=180)
-    ap.add_argument("--phase1-csv", type=str, default=None, help="Phase 1 산출 CSV 경로(헤더에 'H' 컬럼 필수)")
-    ap.add_argument("--seed-h", type=float, default=None, help="Phase 1에서 확정된 H를 직접 주입")
-    ap.add_argument("--asof", type=str, default=None, help="H를 이 날짜(YYYY-MM-DD) 기준으로 선택")
-    ap.add_argument("--start-date", type=str, default=None, help="이 날짜(YYYY-MM-DD)부터 시뮬레이션")
+    ap.add_argument("--phase1-csv", type=str, required=True,
+                    help="Phase 1 debug CSV 경로 (반드시 날짜별 'H' 컬럼 포함)")
     args = ap.parse_args()
 
     symbol = args.symbol.upper()
     pathlib.Path("./output").mkdir(parents=True, exist_ok=True)
-    print(f"[RUNNER] args: symbol={symbol}, limit_days={args.limit_days}, "
-          f"phase1_csv={args.phase1_csv}, seed_h={args.seed_h}, asof={args.asof}, start_date={args.start_date}", flush=True)
+    print(f"[RUNNER] args: symbol={symbol}, limit_days={args.limit_days}, phase1_csv={args.phase1_csv}", flush=True)
 
     try:
         # 0) 데이터 로드 (일봉 5년)
@@ -114,52 +116,38 @@ def main():
             print("[RUNNER][ERROR] No OHLC data", flush=True)
             sys.exit(1)
 
-        # 0-1) 시작일 슬라이스 (원하면)
-        if args.start_date:
-            sd = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            sd_ms = int(sd.timestamp() * 1000)
-            ohlc = [r for r in ohlc if r["closeTime"] >= sd_ms]
-            print(f"[RUNNER] OHLC sliced from {args.start_date}: {len(ohlc)} rows", flush=True)
-            if not ohlc:
-                print("[RUNNER][ERROR] No OHLC rows after start-date slice", flush=True)
-                sys.exit(1)
+        # 1) 날짜별 H 매핑 로드
+        csv_path = pathlib.Path(args.phase1_csv)
+        if not csv_path.exists():
+            print(f"[RUNNER][ERROR] CSV not found: {csv_path}", flush=True)
+            sys.exit(1)
+        daily_H = load_daily_H_map(csv_path, h_col="H")
 
-        # 1) H 결정 — CSV as-of → seed → (부트스트랩) 시작일 고가
-        H: Optional[float] = None
+        # 2) 엄격 검증: OHLC 모든 날짜가 CSV에 존재해야 함
+        missing = []
+        for r in ohlc:
+            d = _yyyymmdd_from_ms(r["closeTime"])
+            if d not in daily_H:
+                missing.append(d)
+        if missing:
+            print("[RUNNER][ERROR] H missing for some dates in debug CSV (strict mode).", flush=True)
+            print(" Missing sample (up to 10):", ", ".join(missing[:10]), flush=True)
+            print(" Please ensure the debug CSV has 'H' for every OHLC date.", flush=True)
+            sys.exit(1)
 
-        # (1) CSV 최우선 ('H' 컬럼만 사용)
-        if args.phase1_csv:
-            csv_path = pathlib.Path(args.phase1_csv)
-            if not csv_path.exists():
-                # 사용자가 .\output\.. 로 준 경우, 경로 정규화 로그만 출력
-                print(f"[RUNNER][WARN] CSV not found at {csv_path}. Trying as given path string..", flush=True)
-            H = load_H_from_csv(csv_path, h_col="H", asof=args.asof)
-            if H is not None:
-                print(f"[PH1.5] Use Phase1 CSV H (asof={args.asof}): {H}", flush=True)
-
-        # (2) seed-h
-        if H is None and args.seed_h is not None:
-            H = float(args.seed_h)
-            print(f"[PH1.5] Use seeded H: {H}", flush=True)
-
-        # (3) (예외 부트스트랩) 시작일의 고가(high)를 H로 채택
-        if H is None:
-            first_high = ohlc[0]["high"]
-            H = float(first_high)
-            print(f"[PH1.5][BOOTSTRAP] No prior H. Bootstrap H with first-day high: {H}", flush=True)
-
-        # 2) 출력 파일명(타임스탬프) — 파일 잠금 충돌 방지
+        # 3) 출력 파일명(타임스탬프)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_csv = pathlib.Path("./output") / f"{symbol.lower()}_phase1_5_shadow_{stamp}.csv"
         print(f"[RUNNER] run simulation → {out_csv}", flush=True)
 
-        # 3) 시뮬레이션 실행
+        # 4) 시뮬레이션 실행 (날짜별 H 매핑 전달)
         run_phase1_5_simulation(
             symbol=symbol,
             ohlc=ohlc,
-            seed_H=H,
+            seed_H=None,                 # seed는 사용하지 않음
             out_csv=out_csv,
-            limit_days=args.limit_days
+            limit_days=args.limit_days,
+            daily_H=daily_H              # 날짜별 H 맵 전달
         )
         print(f"[OK] CSV saved: {out_csv}", flush=True)
 
