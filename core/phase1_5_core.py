@@ -109,12 +109,12 @@ def run_phase1_5_simulation(symbol: str,
     """
     - daily_H가 주어지면 각 일자(date)마다 H = daily_H[date] 를 사용(강제 매칭)
       (seed_H는 무시). 일자별로 H가 바뀔 수 있음.
-    - daily_H가 없으면 seed_H로 시작(기존 동작).
-    - 매수: 저가 기준 레벨 터치
-    - 매도: 고가 기준 L 대비 단계별 임계치 도달(전량 매도)
-    - 상태 전환:
-        * wait에서 L 대비 +98.5% → high
-        * high에서 저가가 H×0.56 이하 → wait (해당 시점 H로 레벨 동결)
+    - daily_H가 없으면 seed_H로 시작(bootstrap).
+    - 매수: 저가 기준, 통과 레벨 중 '가장 깊은' 레벨 1곳에서 매수
+    - 보유 중 추가매수(ADD): 현재 stage보다 깊은 레벨을 당일 저가가 통과하면,
+      그 중 '가장 깊은' 레벨 1곳에서 1회 추가 매수 후 stage 갱신
+    - 매도: 고가 기준, L(최저점) 대비 SELL_THRESHOLDS[stage] 이상 반등 시 전량 매도
+    - 처리 순서(하루): ① 상태전환(high/wait) → ② 매수/추가매수(LOW) → ③ 매도(HIGH)
     """
     def fmt(x, nd=8):
         return None if x is None else round(x, nd)
@@ -132,8 +132,8 @@ def run_phase1_5_simulation(symbol: str,
     # 상태 변수
     mode = "high"     # 초기: high (과거 히스토리 모름)
     position = False
-    stage: Optional[int] = None
-    L: Optional[float] = None
+    stage: Optional[int] = None  # 현재 보유의 '가장 깊은' 단계(1~7)
+    L: Optional[float] = None    # 보유 중 최저가
     last_sell_trigger_price: Optional[float] = None
     forbidden_level_prices: set[float] = set()
 
@@ -153,6 +153,7 @@ def run_phase1_5_simulation(symbol: str,
             "rebound_from_L_pct","threshold_pct",
             "forbidden_levels_above_last_sell"
         ])
+
         for row in ohlc:
             date = ts(row["closeTime"])
             o=row["open"]; h=row["high"]; l=row["low"]; c=row["close"]
@@ -180,48 +181,84 @@ def run_phase1_5_simulation(symbol: str,
                 forbidden_level_prices.clear()
                 position=False; stage=None; L=None  # 새 사이클 준비
 
-            # high → wait : 저가가 H×0.56 이탈 (레벨 동결은 현재 H로 이미 반영됨)
+            # high → wait : 저가가 H×0.56 이탈 (레벨 동결: 현재 H로 이미 반영됨)
             if mode == "high" and (H is not None) and (l is not None) and (l <= H * 0.56):
                 lv = compute_levels(H)
                 level_pairs = sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1])
                 mode = "wait"
                 L = l
 
+            # ---------------------------
+            # ② 매수/추가매수 (LOW 기준)
+            #   - 미보유: 통과 레벨 중 '가장 깊은' 레벨 1곳에서 BUY
+            #   - 보유중: 현재 stage보다 깊게 통과한 레벨이 있으면,
+            #             그 중 '가장 깊은' 레벨 1곳에서 ADD 후 stage 갱신
+            # ---------------------------
+            buy_or_add_happened = False
+            if mode == "wait" and (lv is not None) and (l is not None):
+                crossed = [(nm, p) for (nm, p) in level_pairs
+                           if (l <= p) and (p not in forbidden_level_prices)]
 
-            # ---------------------------
-            # ② 매수 우선 (LOW 기준) — 가장 깊은 레벨 1곳에서만 매수
-            # ---------------------------
-            buy_happened = False
-            if mode == "wait" and (not position) and (lv is not None) and (l is not None):
-                # 당일 저가가 통과한 모든 레벨 수집
-                crossed = [(nm, p) for (nm, p) in level_pairs if l <= p and p not in forbidden_level_prices]
                 if crossed:
-                    # 가장 낮은 가격(= 가장 깊은 레벨) 선택
-                    nm, p = min(crossed, key=lambda x: x[1])
+                    if not position:
+                        # 최초 매수: 가장 깊은 레벨 1곳
+                        nm, p = min(crossed, key=lambda x: x[1])   # 가격이 가장 낮은 = 가장 깊은
+                        position = True
+                        stage = level_names.index(nm) + 1
+                        level_name = nm
+                        level_price = p
+                        basis = "LOW"
+                        trigger_price = l
+                        fill_price = p
+                        L = l
+                        event = f"BUY {nm}"
 
-                    position = True
-                    stage = level_names.index(nm) + 1   # 이 단계가 이후 매도 임계치의 기준이 됩니다
-                    level_name = nm
-                    level_price = p
-                    basis = "LOW"
-                    trigger_price = l        # 트리거 = 당일 저가
-                    fill_price = p           # 체결가 = 레벨가(단순화)
-                    L = l                    # 매수 직후 L 시작(당일 저가)
-                    event = f"BUY {nm}"      # 필요 시: f"BUY {nm} (crossed {len(crossed)} levels)"
-                    
-                    # 매수 이벤트를 즉시 기록 (동일 캔들에서 매도 발생 가능성을 허용)
-                    w.writerow([
-                        date, fmt(o), fmt(h), fmt(l), fmt(c), mode,
-                        position, stage,
-                        event, basis,
-                        level_name, fmt(level_price),
-                        fmt(trigger_price), fmt(fill_price),
-                        fmt(H), fmt(L),
-                        None, None,
-                        len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
-                    ])
-                    buy_happened = True
+                        # 매수 이벤트 즉시 기록 (동일 캔들에서 이어서 SELL 검토 가능)
+                        w.writerow([
+                            date, fmt(o), fmt(h), fmt(l), fmt(c), mode,
+                            position, stage,
+                            event, basis,
+                            level_name, fmt(level_price),
+                            fmt(trigger_price), fmt(fill_price),
+                            fmt(H), fmt(L),
+                            None, None,
+                            len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
+                        ])
+                        buy_or_add_happened = True
 
+                    else:
+                        # 보유 중 추가 매수: 현재 stage보다 깊은 레벨만 대상
+                        current_stage = stage or 0
+                        deeper = []
+                        for (nm, p) in crossed:
+                            st = level_names.index(nm) + 1
+                            if st > current_stage:
+                                deeper.append((nm, p, st))
+                        if deeper:
+                            # 가장 깊은(= stage가 가장 큰) 레벨 1곳 선택
+                            nm, p, new_stage = max(deeper, key=lambda x: x[2])
+                            old_stage = stage
+                            stage = new_stage
+                            level_name = nm
+                            level_price = p
+                            basis = "LOW"
+                            trigger_price = l
+                            fill_price = p
+                            L = l if (L is None) else min(L, l)   # L은 저가로 계속 갱신
+                            event = f"ADD {nm} (stage {old_stage}→{stage})"
+
+                            # 추가 매수 이벤트 기록
+                            w.writerow([
+                                date, fmt(o), fmt(h), fmt(l), fmt(c), mode,
+                                position, stage,
+                                event, basis,
+                                level_name, fmt(level_price),
+                                fmt(trigger_price), fmt(fill_price),
+                                fmt(H), fmt(L),
+                                None, None,
+                                len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
+                            ])
+                            buy_or_add_happened = True
 
             # ---------------------------
             # ③ 매도 평가 (HIGH 기준) — 반드시 보유 중일 때만
@@ -235,7 +272,7 @@ def run_phase1_5_simulation(symbol: str,
                     rebound_pct = (h / L - 1) * 100.0
                     threshold_pct = SELL_THRESHOLDS.get(stage)
                     if (threshold_pct is not None) and (rebound_pct >= threshold_pct):
-                        # SELL (전량)
+                        # 전량 매도
                         position = False
                         basis = "HIGH"
                         event = f"SELL S{stage}"
@@ -260,28 +297,26 @@ def run_phase1_5_simulation(symbol: str,
                             None, threshold_pct,
                             len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
                         ])
-                        # 매도까지 했으면 이 날은 마무리
+
+                        # 매도까지 했으면 이 날은 마무리(일일 이벤트 2~3행 발생 가능)
+                        # 계속 아래로 '일반 스냅샷'을 기록하려면 이 continue를 제거하세요.
                         continue
 
             # ---------------------------
-            # 상태 스냅샷(일반 기록)
+            # (일반 스냅샷) — 이벤트 유무와 관계없이 마감 시점 상태 1행 기록
             # ---------------------------
-            # (주의) 위에서 매수/매도가 한 번이라도 기록됐더라도,
-            #       하루 요약 스냅샷도 남겨두고 싶으면 아래를 유지.
-            #       만약 이벤트 행만 남기고 싶다면 buy_happened 같은 플래그로 건너뛰기 가능.
             w.writerow([
                 date, fmt(o), fmt(h), fmt(l), fmt(c), mode,
                 position, stage,
-                "" if buy_happened else event,  # 이벤트가 이미 기록됐다면 공백
-                basis if buy_happened else "",
-                "" if buy_happened else level_name, fmt(level_price),
+                "" if buy_or_add_happened else event,
+                basis if buy_or_add_happened else "",
+                "" if buy_or_add_happened else level_name, fmt(level_price),
                 fmt(trigger_price), fmt(fill_price),
                 fmt(H), fmt(L) if position else None,
                 None if rebound_pct is None else round(rebound_pct,6),
                 threshold_pct,
                 len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
             ])
-
 
     # 콘솔 요약
     if limit_days:
