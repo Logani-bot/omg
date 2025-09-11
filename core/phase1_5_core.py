@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Phase 1.5 Core Logic
+Phase 1.5 Core Logic (final)
 - 날짜별 H(Phase1 결과)를 그대로 사용하여 매수/매도 시뮬레이션
-- 매수: 저가 기준(B1~B7 터치) 전량 매수
+- 매수: 저가 기준(B1~B7 터치) 전량 매수 / '가장 깊은' 레벨에서 1회
+- 추가매수: 보유 중 더 깊은 레벨 터치 시 1회 ADD, stage 갱신
 - 매도: 고가 기준(L 대비 단계별 반등률) 전량 매도
 - 상태 전환:
   * wait에서 L 대비 +98.5% → high
   * high에서 저가가 H×0.56 이하 → wait (이때의 H로 레벨 동결)
+- 재진입 규칙(강화):
+  * 매도 발생 후, '차단 기준가' = max(목표 매도가, 당일 저가)
+    - 목표 매도가 = L × (1 + threshold%)
+    - cutoff_price = max(target_sell_price, low_of_the_day)
+    - 이후 cutoff_price보다 '위'의 매수 레벨은 항상 금지(동적 차단)
+- CSV 컬럼 의미:
+  * trigger_price: 트리거/기준 가격 (BUY/ADD: 당일 저가, SELL: '목표 매도가')
+  * fill_price: 체결가 (BUY/ADD: 레벨가 p, SELL: 당일 고가 h)
 """
 
 import datetime as dt
@@ -111,9 +120,11 @@ def run_phase1_5_simulation(symbol: str,
       (seed_H는 무시). 일자별로 H가 바뀔 수 있음.
     - daily_H가 없으면 seed_H로 시작(bootstrap).
     - 매수: 저가 기준, 통과 레벨 중 '가장 깊은' 레벨 1곳에서 매수
-    - 보유 중 추가매수(ADD): 현재 stage보다 깊은 레벨을 당일 저가가 통과하면,
-      그 중 '가장 깊은' 레벨 1곳에서 1회 추가 매수 후 stage 갱신
-    - 매도: 고가 기준, L(최저점) 대비 SELL_THRESHOLDS[stage] 이상 반등 시 전량 매도
+    - 추가매수(ADD): 보유 중 더 깊은 레벨 터치 시 1회 ADD 후 stage 갱신
+    - 매도: 고가 기준, L 대비 SELL_THRESHOLDS[stage] 이상 반등 시 전량 매도
+      · 매도 시 '목표 매도가' = L × (1 + threshold%)
+      · '차단 기준가' cutoff_price = max(목표 매도가, 당일 저가)
+      · 이후 cutoff_price보다 위의 레벨은 재진입 금지(동적)
     - 처리 순서(하루): ① 상태전환(high/wait) → ② 매수/추가매수(LOW) → ③ 매도(HIGH)
     """
     def fmt(x, nd=8):
@@ -124,7 +135,7 @@ def run_phase1_5_simulation(symbol: str,
 
     level_names = ["B1","B2","B3","B4","B5","B6","B7"]
 
-    # 초기 H 설정
+    # 초기 H
     H: Optional[float] = None if daily_H else (float(seed_H) if seed_H is not None else None)
     lv = compute_levels(H) if H is not None else None
     level_pairs = (sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1]) if lv else [])
@@ -134,8 +145,8 @@ def run_phase1_5_simulation(symbol: str,
     position = False
     stage: Optional[int] = None  # 현재 보유의 '가장 깊은' 단계(1~7)
     L: Optional[float] = None    # 보유 중 최저가
-    last_sell_trigger_price: Optional[float] = None
-    forbidden_level_prices: set[float] = set()
+    last_sell_trigger_price: Optional[float] = None  # 여기서는 '차단 기준가(cutoff)'로 사용
+    forbidden_level_prices: set[float] = set()       # 참고용 정적 금지(당시 레벨값 기준)
 
     def ts(ms:int)->str:
         return dt.datetime.fromtimestamp(ms/1000, tz=dt.UTC).strftime("%Y-%m-%d")
@@ -190,14 +201,19 @@ def run_phase1_5_simulation(symbol: str,
 
             # ---------------------------
             # ② 매수/추가매수 (LOW 기준)
-            #   - 미보유: 통과 레벨 중 '가장 깊은' 레벨 1곳에서 BUY
-            #   - 보유중: 현재 stage보다 깊게 통과한 레벨이 있으면,
-            #             그 중 '가장 깊은' 레벨 1곳에서 ADD 후 stage 갱신
             # ---------------------------
             buy_or_add_happened = False
+
+            def is_level_allowed(p: float) -> bool:
+                # 정적 금지 + 동적 금지(현재 레벨가격이 차단 기준가(cutoff)보다 위면 금지)
+                if p in forbidden_level_prices:
+                    return False
+                if last_sell_trigger_price is not None and p > last_sell_trigger_price:
+                    return False
+                return True
+
             if mode == "wait" and (lv is not None) and (l is not None):
-                crossed = [(nm, p) for (nm, p) in level_pairs
-                           if (l <= p) and (p not in forbidden_level_prices)]
+                crossed = [(nm, p) for (nm, p) in level_pairs if (l <= p) and is_level_allowed(p)]
 
                 if crossed:
                     if not position:
@@ -213,7 +229,7 @@ def run_phase1_5_simulation(symbol: str,
                         L = l
                         event = f"BUY {nm}"
 
-                        # 매수 이벤트 즉시 기록 (동일 캔들에서 이어서 SELL 검토 가능)
+                        # 매수 이벤트 즉시 기록
                         w.writerow([
                             date, fmt(o), fmt(h), fmt(l), fmt(c), mode,
                             position, stage,
@@ -222,7 +238,7 @@ def run_phase1_5_simulation(symbol: str,
                             fmt(trigger_price), fmt(fill_price),
                             fmt(H), fmt(L),
                             None, None,
-                            len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
+                            len([1 for (_nm, p2) in level_pairs if is_level_allowed(p2)])
                         ])
                         buy_or_add_happened = True
 
@@ -244,7 +260,7 @@ def run_phase1_5_simulation(symbol: str,
                             basis = "LOW"
                             trigger_price = l
                             fill_price = p
-                            L = l if (L is None) else min(L, l)   # L은 저가로 계속 갱신
+                            L = l if (L is None) else min(L, l)   # L은 저가로 갱신
                             event = f"ADD {nm} (stage {old_stage}→{stage})"
 
                             # 추가 매수 이벤트 기록
@@ -256,7 +272,7 @@ def run_phase1_5_simulation(symbol: str,
                                 fmt(trigger_price), fmt(fill_price),
                                 fmt(H), fmt(L),
                                 None, None,
-                                len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
+                                len([1 for (_nm, p2) in level_pairs if is_level_allowed(p2)])
                             ])
                             buy_or_add_happened = True
 
@@ -276,10 +292,20 @@ def run_phase1_5_simulation(symbol: str,
                         position = False
                         basis = "HIGH"
                         event = f"SELL S{stage}"
-                        trigger_price = h
+
+                        # 목표 매도가(이론): L * (1 + threshold)
+                        target_sell_price = L * (1.0 + (threshold_pct / 100.0))
+                        # 갭 상승 보정: cutoff = max(목표가, 당일 저가)
+                        cutoff_price = max(target_sell_price, l if l is not None else target_sell_price)
+
+                        # 기록 값: trigger=목표가, fill=당일 고가
+                        trigger_price = target_sell_price
                         fill_price = h
-                        last_sell_trigger_price = h
-                        # 매도 체결가보다 위의 매수선 금지
+
+                        # 재진입 차단 기준 = cutoff_price
+                        last_sell_trigger_price = cutoff_price
+
+                        # (참고용) 정적 금지 세트: '당시' 레벨 중 cutoff보다 위
                         forbidden_level_prices = {
                             p for (_, p) in level_pairs
                             if last_sell_trigger_price and p > last_sell_trigger_price
@@ -295,11 +321,12 @@ def run_phase1_5_simulation(symbol: str,
                             fmt(trigger_price), fmt(fill_price),
                             fmt(H), None,
                             None, threshold_pct,
-                            len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
+                            len([1 for (_nm, p2) in level_pairs
+                                 if (p2 not in forbidden_level_prices)
+                                 and not (last_sell_trigger_price is not None and p2 > last_sell_trigger_price)])
                         ])
 
-                        # 매도까지 했으면 이 날은 마무리(일일 이벤트 2~3행 발생 가능)
-                        # 계속 아래로 '일반 스냅샷'을 기록하려면 이 continue를 제거하세요.
+                        # 매도까지 했으면 이 날은 마무리
                         continue
 
             # ---------------------------
@@ -315,7 +342,9 @@ def run_phase1_5_simulation(symbol: str,
                 fmt(H), fmt(L) if position else None,
                 None if rebound_pct is None else round(rebound_pct,6),
                 threshold_pct,
-                len([1 for (_nm, p2) in level_pairs if p2 not in forbidden_level_prices])
+                len([1 for (_nm, p2) in level_pairs
+                     if (p2 not in forbidden_level_prices)
+                     and not (last_sell_trigger_price is not None and p2 > last_sell_trigger_price)])
             ])
 
     # 콘솔 요약

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Phase 1.5 Runner — debug CSV의 H를 '모든 날짜'에 대해 매칭
-- 규칙:
-  * OHLC 전체(5년)를 사용
-  * debug CSV에서 날짜별 'H'를 읽어 (YYYY-MM-DD → H) 매핑 생성
-  * OHLC의 모든 날짜가 CSV에 존재해야 함(엄격). 없으면 에러 종료
-  * 코어는 각 일자마다 전달된 H로 레벨(B1~B7)을 재계산 후, 저가 매수/고가 매도 로직 수행
-- 출력 CSV는 타임스탬프를 붙여 파일 잠금 충돌 방지
+Phase 1.5 Runner — debug CSV의 H를 '모든 날짜'에 대해 매칭 (엄격) + OHLC 자동 트림
+- OHLC: 바이낸스 1d * 5년
+- H: debug CSV에서 날짜별 'H'를 읽어 YYYY-MM-DD → H 매핑 생성
+- OHLC의 날짜가 CSV 커버리지를 넘어가면, CSV의 마지막 날짜까지만 자동으로 잘라 사용
+- 잘린 구간(공통 구간) 안에서 H가 빈 날짜가 있으면 에러로 종료
+- 코어는 각 일자마다 해당 H로 레벨 재계산 후, 저가 매수 / 고가 매도 수행
 """
 
 import argparse
@@ -87,7 +86,6 @@ def load_daily_H_map(csv_path: pathlib.Path, h_col: str = "H") -> Dict[str, floa
             val = float(s)
         except ValueError:
             continue
-        # 동일 날짜는 '가장 뒤쪽' 값이 최종
         if d not in m:
             m[d] = val
     print(f"[RUNNER] daily H loaded: {len(m)} dates", flush=True)
@@ -108,7 +106,7 @@ def main():
     print(f"[RUNNER] args: symbol={symbol}, limit_days={args.limit_days}, phase1_csv={args.phase1_csv}", flush=True)
 
     try:
-        # 0) 데이터 로드 (일봉 5년)
+        # 0) OHLC 로드
         print(f"[PH1.5] Fetch {symbol}USDT 1d OHLC (5y)…", flush=True)
         ohlc = get_binance_1d_ohlc_5y(f"{symbol}USDT")
         print(f"[RUNNER] OHLC rows: {len(ohlc)}", flush=True)
@@ -123,28 +121,38 @@ def main():
             sys.exit(1)
         daily_H = load_daily_H_map(csv_path, h_col="H")
 
-        # 2) 엄격 검증: OHLC 모든 날짜가 CSV에 존재해야 함
+        # 2) 공통 구간 산출: CSV가 커버하는 마지막 날짜까지만 OHLC 사용
+        h_dates = sorted(daily_H.keys())
+        last_h_date = h_dates[-1]  # CSV가 커버하는 마지막 날짜
+        full_len = len(ohlc)
+        ohlc = [r for r in ohlc if _yyyymmdd_from_ms(r["closeTime"]) <= last_h_date]
+        print(f"[RUNNER] OHLC trimmed to CSV last date {last_h_date}: {len(ohlc)} rows (from {full_len})", flush=True)
+        if not ohlc:
+            print("[RUNNER][ERROR] No OHLC rows after trim to CSV coverage", flush=True)
+            sys.exit(1)
+
+        # 3) 엄격 검증: 공통 구간 안의 모든 날짜에 H가 있어야 함
         missing = []
         for r in ohlc:
             d = _yyyymmdd_from_ms(r["closeTime"])
             if d not in daily_H:
                 missing.append(d)
         if missing:
-            print("[RUNNER][ERROR] H missing for some dates in debug CSV (strict mode).", flush=True)
-            print(" Missing sample (up to 10):", ", ".join(missing[:10]), flush=True)
-            print(" Please ensure the debug CSV has 'H' for every OHLC date.", flush=True)
+            print("[RUNNER][ERROR] H missing inside common date range (strict).", flush=True)
+            print(" Missing sample (up to 10):", ", ".join(sorted(set(missing))[:10]), flush=True)
+            print(" Please ensure the debug CSV has 'H' for every date in the used period.", flush=True)
             sys.exit(1)
 
-        # 3) 출력 파일명(타임스탬프)
+        # 4) 출력 파일명
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_csv = pathlib.Path("./output") / f"{symbol.lower()}_phase1_5_shadow_{stamp}.csv"
         print(f"[RUNNER] run simulation → {out_csv}", flush=True)
 
-        # 4) 시뮬레이션 실행 (날짜별 H 매핑 전달)
+        # 5) 시뮬레이션 실행
         run_phase1_5_simulation(
             symbol=symbol,
             ohlc=ohlc,
-            seed_H=None,                 # seed는 사용하지 않음
+            seed_H=None,                 # daily_H 모드이므로 seed는 사용하지 않음
             out_csv=out_csv,
             limit_days=args.limit_days,
             daily_H=daily_H              # 날짜별 H 맵 전달
