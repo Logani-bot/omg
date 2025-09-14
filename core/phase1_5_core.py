@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Phase 1.5 Core Logic (final)
-- 날짜별 H(Phase1 결과)를 그대로 사용하여 매수/매도 시뮬레이션
-- 매수: 저가 기준(B1~B7 터치) 전량 매수 / '가장 깊은' 레벨에서 1회
-- 추가매수: 보유 중 더 깊은 레벨 터치 시 1회 ADD, stage 갱신
-- 매도: 고가 기준(L 대비 단계별 반등률) 전량 매도
-- 상태 전환:
-  * wait에서 L 대비 +98.5% → high
-  * high에서 저가가 H×0.56 이하 → wait (이때의 H로 레벨 동결)
-- 재진입 규칙(강화):
-  * 매도 발생 후, '차단 기준가' = max(목표 매도가, 실제 체결가)
-    - 목표 매도가 = L × (1 + threshold%)
-    - cutoff_price = max(target_sell_price, fill_price)
-    - 이후 cutoff_price보다 '위'의 매수 레벨은 항상 금지(동적 차단)
-- 첫날(상장 첫 캔들) 데이터는 품질 이슈가 잦아 **완전히 무시**하고, 다음 날부터 트래킹 시작
-- CSV 컬럼 의미:
-  * trigger_price: 트리거/기준 가격 (BUY/ADD: 당일 저가, SELL: '목표 매도가')
-  * fill_price: 체결가 (BUY/ADD: 레벨가 p,
-                   SELL: 
-                       - 갭오픈(당일 저가 ≥ 목표가) : 당일 시가 o
-                       - 일반 : 목표가(target_sell_price))
+Phase 1.5 Core Logic — import rules 적용본
+- phase1_5_rules.py 를 import 하여 다음을 보장:
+  1) 1차 매수 이후에는 바로 다음 레벨(2차)부터 추가 매수 허용 (MIN_LEVEL_GAP_FOR_ADD=1)
+  2) 실제 매도 체결가 기준으로, 그 위의 매수 레벨 금지 (동적 forbidden)
+  3) forbidden_levels_above_last_sell 집계 정확 수정
+- 기존 로직 유지(일봉 OHLC, 최초 매수는 당일 저가로 터치한 레벨 중 가장 깊은 1곳)
+- 추가매수는 보유 중 더 깊은 레벨마다 반복 체결(단, 당일 동일 레벨 중복 방지)
 """
-
 import datetime as dt
 import time
 from typing import Any, Dict, List, Optional
 import pathlib
 import csv
 import requests
+
+# === NEW: rules import ===
+from phase1_5_rules import (
+    TradeState,
+    update_forbidden_after_sell,
+    should_execute_buy,
+    on_buy_filled,
+    on_sell_filled,
+)
 
 # ===== 상수 =====
 YEARS = 5
@@ -124,6 +119,24 @@ def compute_levels(H: float) -> Dict[str, float]:
         "Stop": round(H * 0.19, 10),
     }
 
+# ===== 금지 레벨 카운트 =====
+
+def _forbidden_count_by_state(level_pairs, state: TradeState) -> int:
+    """
+    금지 레벨 개수 카운트.
+    - 매도 이후 첫 매수 전(buys_since_last_sell==0)에는 0으로 간주.
+    - 이후에는 last_sell_price 및 금지 인덱스 기준으로 집계.
+    """
+    if state.last_sell_price is None or getattr(state, "buys_since_last_sell", 0) == 0:
+        return 0
+    cnt = 0
+    for idx, (_nm, p) in enumerate(level_pairs):
+        if p >= state.last_sell_price:
+            cnt += 1
+        elif idx in state.forbidden_levels_above_last_sell:
+            cnt += 1
+    return cnt
+
 # ===== Phase 1.5 시뮬레이션 =====
 
 def run_phase1_5_simulation(
@@ -140,23 +153,20 @@ def run_phase1_5_simulation(
     - daily_H가 없으면 seed_H로 시작(기존 동작).
     - 매수: 저가 기준 레벨 터치
     - 매도: 고가 기준 L 대비 단계별 임계치 도달(전량 매도)
-    - 상태 전환:
-        * wait에서 L 대비 +98.5% → high
-        * high에서 저가가 H×0.56 이탈 (레벨 동결은 현재 H로 이미 반영됨)
+    - 추가매수: 보유 상태에서 더 깊은(미체결) 레벨 터치 시 반복 매수(당일 동일 레벨 1회)
     """
 
     def fmt(x, nd=8):
         return None if x is None else round(x, nd)
 
     print(
-        f"[CORE] run_phase1_5_simulation: symbol={symbol}, "
-        f"seed_H={seed_H}, daily_H_map={'yes' if daily_H else 'no'}",
+        f"[CORE] run_phase1_5_simulation: symbol={symbol}, seed_H={seed_H}, daily_H_map={'yes' if daily_H else 'no'}",
         flush=True,
     )
 
     level_names = ["B1", "B2", "B3", "B4", "B5", "B6", "B7"]
 
-    # 초기 H
+    # 초기 H 및 레벨
     H: Optional[float] = None if daily_H else (float(seed_H) if seed_H is not None else None)
     lv = compute_levels(H) if H is not None else None
     level_pairs = (
@@ -164,12 +174,16 @@ def run_phase1_5_simulation(
     )
 
     # 상태 변수
-    mode = "high"  # 초기: high (과거 히스토리 모름)
+    mode = "high"
     position = False
     stage: Optional[int] = None
     L: Optional[float] = None
-    last_sell_trigger_price: Optional[float] = None
-    forbidden_level_prices: set[float] = set()
+
+    # NEW: TradeState 사용
+    state = TradeState()
+
+    # 레벨별 최근 체결 일자 (같은 레벨도 '날짜가 바뀌면' 다시 체결 허용)
+    last_fill_date: dict[str, str] = {}
 
     def ts(ms: int) -> str:
         return dt.datetime.fromtimestamp(ms / 1000, tz=dt.UTC).strftime("%Y-%m-%d")
@@ -230,19 +244,18 @@ def run_phase1_5_simulation(
                     level_pairs = sorted(
                         [(nm, lv[nm]) for nm in level_names], key=lambda x: x[1]
                     )
+                    # H 업데이트 시, 금지세트 재계산
+                    # update_forbidden_after_sell(state, [p for _nm, p in level_pairs])  # 제거: 매도 전까지 forbidden 고정
 
-            # ---------------------------
             # ① 상태 전환 처리
-            # ---------------------------
-            # wait → high : L 대비 +98.5% (고가 기준)
             if mode == "wait" and L is not None and h is not None and h >= L * 1.985:
                 mode = "high"
-                forbidden_level_prices.clear()
                 position = False
                 stage = None
-                L = None  # 새 사이클 준비
+                L = None
+                last_fill_date.clear()
+                # 상승 전환 시 금지세트는 유지 (전략 의도상 유지)
 
-            # high → wait : 저가가 H×0.56 이탈 (레벨 동결은 현재 H로 이미 반영됨)
             if mode == "high" and (H is not None) and (l is not None) and (l <= H * 0.56):
                 lv = compute_levels(H)
                 level_pairs = sorted(
@@ -250,10 +263,9 @@ def run_phase1_5_simulation(
                 )
                 mode = "wait"
                 L = l
+                # 하락 시작 시점에도 금지세트는 상태(state)로 관리되므로 유지
 
-            # ---------------------------
-            # ② 매수 우선 (LOW 기준) — 가장 깊은 레벨 1곳에서만 매수
-            # ---------------------------
+            # ② 최초 매수 — 가장 깊은 레벨 1곳
             buy_happened = False
             if (
                 mode == "wait"
@@ -261,63 +273,108 @@ def run_phase1_5_simulation(
                 and (lv is not None)
                 and (l is not None)
             ):
-                # 당일 저가가 통과한 모든 레벨 수집
                 crossed = [
                     (nm, p)
                     for (nm, p) in level_pairs
-                    if l <= p and p not in forbidden_level_prices
+                    if l <= p
                 ]
                 if crossed:
-                    # 가장 낮은 가격(= 가장 깊은 레벨) 선택
-                    nm, p = min(crossed, key=lambda x: x[1])
+                    nm, p = min(crossed, key=lambda x: x[1])  # 가장 깊은 레벨
+                    idx_lv = level_names.index(nm)
+                    if should_execute_buy(state, idx_lv, p):
+                        position = True
+                        stage = idx_lv + 1
+                        level_name = nm
+                        level_price = p
+                        basis = "LOW"
+                        trigger_price = l
+                        fill_price = p
+                        L = l
+                        event = f"BUY {nm}"
 
-                    position = True
-                    stage = level_names.index(nm) + 1  # 이 단계가 이후 매도 임계치의 기준이 됩니다
+                        last_fill_date[nm] = date
+                        on_buy_filled(state, idx_lv, p)
+
+                        w.writerow(
+                            [
+                                date,
+                                round(o, 8),
+                                round(h, 8),
+                                round(l, 8),
+                                round(c, 8),
+                                mode,
+                                position,
+                                stage,
+                                event,
+                                basis,
+                                level_name,
+                                round(level_price, 8),
+                                round(trigger_price, 8),
+                                round(fill_price, 8),
+                                round(H, 8) if H is not None else None,
+                                round(L, 8) if L is not None else None,
+                                None,
+                                None,
+                                _forbidden_count_by_state(level_pairs, state),
+                            ]
+                        )
+                        buy_happened = True
+
+            # ②-1 추가 매수 — 보유 중 더 깊은 레벨 반복
+            if (
+                mode == "wait"
+                and position
+                and (lv is not None)
+                and (l is not None)
+            ):
+                add_candidates = [
+                    (nm, p)
+                    for (nm, p) in level_pairs
+                    if (last_fill_date.get(nm) != date) and (l <= p)
+                ]
+                for nm, p in sorted(add_candidates, key=lambda x: x[1]):
+                    idx_lv = level_names.index(nm)
+                    if not should_execute_buy(state, idx_lv, p):
+                        continue
                     level_name = nm
                     level_price = p
                     basis = "LOW"
-                    trigger_price = l  # 트리거 = 당일 저가
-                    fill_price = p  # 체결가 = 레벨가(단순화)
-                    L = l  # 매수 직후 L 시작(당일 저가)
-                    event = f"BUY {nm}"  # 필요 시: f"BUY {nm} (crossed {len(crossed)} levels)"
+                    trigger_price = l
+                    fill_price = p
+                    event = f"ADD {nm}"
 
-                    # 매수 이벤트를 즉시 기록 (동일 캔들에서 매도 발생 가능성을 허용)
+                    stage = max(stage or 1, idx_lv + 1)
+                    L = l if (L is None) else min(L, l)
+
+                    last_fill_date[nm] = date
+                    on_buy_filled(state, idx_lv, p)
+
                     w.writerow(
                         [
                             date,
-                            fmt(o),
-                            fmt(h),
-                            fmt(l),
-                            fmt(c),
+                            round(o, 8),
+                            round(h, 8),
+                            round(l, 8),
+                            round(c, 8),
                             mode,
                             position,
                             stage,
                             event,
                             basis,
                             level_name,
-                            fmt(level_price),
-                            fmt(trigger_price),
-                            fmt(fill_price),
-                            fmt(H),
-                            fmt(L),
+                            round(level_price, 8),
+                            round(trigger_price, 8),
+                            round(fill_price, 8),
+                            round(H, 8) if H is not None else None,
+                            round(L, 8) if L is not None else None,
                             None,
                             None,
-                            len(
-                                [
-                                    1
-                                    for (_nm, p2) in level_pairs
-                                    if p2 not in forbidden_level_prices
-                                ]
-                            ),
+                            _forbidden_count_by_state(level_pairs, state),
                         ]
                     )
-                    buy_happened = True
 
-            # ---------------------------
-            # ③ 매도 평가 (HIGH 기준) — 반드시 보유 중일 때만
-            # ---------------------------
+            # ③ 매도 — 보유 중일 때만
             if position and stage is not None:
-                # 보유 중엔 L 유지/갱신
                 if l is not None:
                     L = l if (L is None) else min(L, l)
 
@@ -325,109 +382,68 @@ def run_phase1_5_simulation(
                     rebound_pct = (h / L - 1) * 100.0
                     threshold_pct = SELL_THRESHOLDS.get(stage)
                     if (threshold_pct is not None) and (rebound_pct >= threshold_pct):
-                        # SELL (전량)
                         position = False
                         basis = "HIGH"
                         event = f"SELL S{stage}"
 
-                        # 목표 매도가(이론): L * (1 + threshold)
                         target_sell_price = L * (1.0 + (threshold_pct / 100.0))
-
-                        # 갭오픈 판정: 당일 저가가 목표가 이상이면, 목표가 이하로 내려오지 않음
                         gap_open = (l is not None) and (l >= target_sell_price)
+                        trigger_price = target_sell_price
+                        fill_price = (o if gap_open else target_sell_price)
 
-                        # 기록 값
-                        trigger_price = target_sell_price  # 트리거는 정확한 목표가
-                        fill_price = (
-                            o if gap_open else target_sell_price
-                        )  # 갭오픈이면 시가 체결, 아니면 목표가 체결
-
-                        # 재진입 차단 기준: 실제 체결가(갭오픈 시 시가)와 목표가 중 더 큰 값으로 차단 기준가 지정
-                        cutoff_price = max(target_sell_price, fill_price)
-                        last_sell_trigger_price = cutoff_price
-
-                        # (참고용) 정적 금지 세트: '당시' 레벨 중 cutoff보다 위
-                        forbidden_level_prices = {
-                            p
-                            for (_nm, p) in level_pairs
-                            if (last_sell_trigger_price is not None) and (p > last_sell_trigger_price)
-                        }
+                        # rules에 따라 금지 레벨 재계산
+                        on_sell_filled(state, fill_price, [p for _nm, p in level_pairs])
                         stage = None
                         L = None
+                        last_fill_date.clear()
 
                         w.writerow(
                             [
                                 date,
-                                fmt(o),
-                                fmt(h),
-                                fmt(l),
-                                fmt(c),
+                                round(o, 8),
+                                round(h, 8),
+                                round(l, 8),
+                                round(c, 8),
                                 mode,
                                 position,
                                 stage,
                                 event,
                                 basis,
                                 level_name,
-                                fmt(level_price),
-                                fmt(trigger_price),
-                                fmt(fill_price),
-                                fmt(H),
+                                round(level_price, 8) if level_price is not None else None,
+                                round(trigger_price, 8),
+                                round(fill_price, 8),
+                                round(H, 8) if H is not None else None,
                                 None,
                                 None,
                                 threshold_pct,
-                                len(
-                                    [
-                                        1
-                                        for (_nm, p2) in level_pairs
-                                        if (p2 not in forbidden_level_prices)
-                                        and not (
-                                            last_sell_trigger_price is not None
-                                            and p2 > last_sell_trigger_price
-                                        )
-                                    ]
-                                ),
+                                _forbidden_count_by_state(level_pairs, state),
                             ]
                         )
-                        # 매도까지 했으면 이 날은 마무리
                         continue
 
-            # ---------------------------
-            # 상태 스냅샷(일반 기록)
-            # ---------------------------
-            # (주의) 위에서 매수/매도가 한 번이라도 기록됐더라도,
-            #       하루 요약 스냅샷도 남겨두고 싶으면 아래를 유지.
-            #       만약 이벤트 행만 남기고 싶다면 buy_happened 같은 플래그로 건너뛰기 가능.
+            # ④ 상태 스냅샷(일반 기록)
             w.writerow(
                 [
                     date,
-                    fmt(o),
-                    fmt(h),
-                    fmt(l),
-                    fmt(c),
+                    round(o, 8),
+                    round(h, 8),
+                    round(l, 8),
+                    round(c, 8),
                     mode,
                     position,
                     stage,
-                    "" if buy_happened else event,  # 이벤트가 이미 기록됐다면 공백
+                    "" if buy_happened else event,
                     basis if buy_happened else "",
                     "" if buy_happened else level_name,
-                    fmt(level_price),
-                    fmt(trigger_price),
-                    fmt(fill_price),
-                    fmt(H),
-                    fmt(L) if position else None,
+                    round(level_price, 8) if level_price is not None else None,
+                    round(trigger_price, 8) if trigger_price is not None else None,
+                    round(fill_price, 8) if fill_price is not None else None,
+                    round(H, 8) if H is not None else None,
+                    round(L, 8) if (position and L is not None) else None,
                     None if rebound_pct is None else round(rebound_pct, 6),
                     threshold_pct,
-                    len(
-                        [
-                            1
-                            for (_nm, p2) in level_pairs
-                            if (p2 not in forbidden_level_prices)
-                            and not (
-                                last_sell_trigger_price is not None
-                                and p2 > last_sell_trigger_price
-                            )
-                        ]
-                    ),
+                    _forbidden_count_by_state(level_pairs, state),
                 ]
             )
 
