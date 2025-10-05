@@ -1,31 +1,31 @@
-universe,symbol,name,error
-COIN,SUIUSDT,Sui,'str' object has no attribute 'read_text'
-COIN,XRPUSDT,XRP,'str' object has no attribute 'read_text'
-COIN,BTCUSDT,Bitcoin,'str' object has no attribute 'read_text'
-COIN,ETHUSDT,Ethereum,'str' object has no attribute 'read_text'
-COIN,SOLUSDT,Solana,'str' object has no attribute 'read_text'
-COIN,BNBUSDT,BNB,'str' object has no attribute 'read_text'
-COIN,ADAUSDT,Cardano,'str' object has no attribute 'read_text'
-COIN,LINKUSDT,Chainlink,'str' object has no attribute 'read_text'
-COIN,DOGEUSDT,Dogecoin,'str' object has no attribute 'read_text'
-COIN,XLMUSDT,Stellar,'str' object has no attribute 'read_text'
-COIN,TRXUSDT,TRON,'str' object has no attribute 'read_text'
-COIN,AVAXUSDT,Avalanche,'str' object has no attribute 'read_text'
-COIN,TONUSDT,Toncoin,'str' object has no attribute 'read_text'
-COIN,ENAUSDT,Ethena,'str' object has no attribute 'read_text'
-COIN,PEPEUSDT,Pepe,'str' object has no attribute 'read_text'
-COIN,BCHUSDT,Bitcoin Cash,'str' object has no attribute 'read_text'
-COIN,TAOUSDT,Bittensor,'str' object has no attribute 'read_text'
-COIN,HBARUSDT,Hedera,'str' object has no attribute 'read_text'
-COIN,LTCUSDT,Litecoin,'str' object has no attribute 'read_text'
-COIN,SHIBUSDT,Shiba Inu,'str' object has no attribute 'read_text'
-COIN,UNIUSDT,Uniswap,'str' object has no attribute 'read_text'
-COIN,DOTUSDT,Polkadot,'str' object has no attribute 'read_text'
-COIN,AAVEUSDT,Aave,'str' object has no attribute 'read_text'
-COIN,APTUSDT,Aptos,'str' object has no attribute 'read_text'
-COIN,ONDOUSDT,Ondo,'str' object has no attribute 'read_text'
-COIN,BNSOLUSDT,Binance Staked SOL,'str' object has no attribute 'read_text'
-COIN,USD1USDT,USD1,'str' object has no attribute 'read_text'
-COIN,NEARUSDT,NEAR Protocol,'str' object has no attribute 'read_text'
-COIN,POLUSDT,POL (ex-MATIC),'str' object has no attribute 'read_text'
-COIN,ETCUSDT,Ethereum Classic,'str' object has no attribute 'read_text'
+universe,symbol,name,last_price,mode,in_position,stage,next_buy_level,next_buy_price,pct_to_next_buy,pct_to_next_buy_abs,H,L_now,drawdown_from_H_pct,rebound_from_L_pct,buy_allowed_today,sell_restricted,notes
+COIN,PEPEUSDT,Pepe,1e-05,wait,Y,5,B5,1e-05,-0.74,0.74,2.8e-05,8e-06,-64.739,22.771,,,cutoff
+COIN,DOGEUSDT,Dogecoin,0.25629,wait,Y,6,B5,0.258983,1.051,1.051,0.73995,0.18845,-65.364,40.716,,,
+COIN,ADAUSDT,Cardano,0.8535,wait,Y,6,B6,0.86828,1.732,1.732,3.101,0.7542,-72.477,17.025,,,
+COIN,AVAXUSDT,Avalanche,30.24,wait,Y,7,B7,30.87,2.083,2.083,147.0,25.75,-79.429,21.204,,,
+COIN,ENAUSDT,Ethena,0.6033,wait,Y,4,B4,0.62443,3.502,3.502,1.523,0.5343,-60.387,18.024,,,cutoff
+COIN,POLUSDT,POL (ex-MATIC),0.2393,wait,Y,7,B7,0.21,-12.244,12.244,1.0,0.1519,-76.07,61.883,,,cutoff
+COIN,TAOUSDT,Bittensor,322.2,wait,Y,6,B7,262.29,-18.594,18.594,1249.0,287.5,-74.203,14.087,,,
+COIN,LTCUSDT,Litecoin,119.82,wait,Y,6,B7,86.8329,-27.531,27.531,413.49,100.25,-71.022,23.86,,,
+COIN,BCHUSDT,Bitcoin Cash,595.7,wait,Y,6,B7,346.5,-41.833,41.833,1650.0,436.9,-63.897,40.833,,,
+COIN,HBARUSDT,Hedera,0.22031,wait,Y,4,B7,0.12096,-45.096,45.096,0.576,0.19632,-61.752,15.475,,,cutoff
+COIN,TONUSDT,Toncoin,2.815,wait,Y,4,B7,1.52649,-45.773,45.773,7.269,2.354,-61.274,21.793,,,cutoff
+COIN,LINKUSDT,Chainlink,22.46,wait,N,0,B7,11.13,-50.445,50.445,53.0,15.43,-57.623,,,,cutoff
+COIN,AAVEUSDT,Aave,290.24,wait,N,0,B7,140.28,-51.668,51.668,668.0,208.83,-56.551,,,,cutoff
+COIN,XLMUSDT,Stellar,0.4005,wait,N,0,B7,0.167685,-58.131,58.131,0.7985,0.2976,-49.843,,,,cutoff
+COIN,SUIUSDT,Sui,3.5925,wait,N,0,B7,1.127427,-68.617,68.617,5.3687,2.2937,-33.084,,,,cutoff
+COIN,TRXUSDT,TRON,0.3424,wait,N,0,B7,0.0945,-72.401,72.401,0.45,0.2011,-23.911,,,,cutoff
+COIN,SOLUSDT,Solana,230.13,wait,N,0,B7,62.1243,-73.005,73.005,295.83,155.83,-22.209,,,,cutoff
+COIN,ONDOUSDT,Ondo,0.9304,wait,N,0,B7,0.245595,-73.603,73.603,1.1695,0.6214,-20.445,,,,cutoff
+COIN,BNSOLUSDT,Binance Staked SOL,247.7,high,N,0,B7,63.525,-74.354,74.354,302.5,,-18.116,,,,
+COIN,XRPUSDT,XRP,3.0117,high,N,0,B7,0.768747,-74.475,74.475,3.6607,,-17.729,,,,
+COIN,ETHUSDT,Ethereum,4531.99,high,N,0,B7,1040.9238,-77.032,77.032,4956.78,,-8.57,,,,
+COIN,USD1USDT,USD1,0.9993,high,N,0,B7,0.2163,-78.355,78.355,1.03,,-2.981,,,,
+COIN,BNBUSDT,BNB,1158.41,high,N,0,B7,250.4082,-78.383,78.383,1192.42,,-2.852,,,,
+COIN,BTCUSDT,Bitcoin,122803.17,high,N,0,B7,26398.7682,-78.503,78.503,125708.42,,-2.311,,,,
+COIN,APTUSDT,Aptos,5.502,wait,N,0,-,,,,100.0,3.747,-94.498,,,,
+COIN,DOTUSDT,Polkadot,4.242,wait,Y,7,-,,,,55.09,3.007,-92.3,45.494,,,
+COIN,ETCUSDT,Ethereum Classic,19.76,wait,N,0,-,,,,179.83,17.56,-89.012,,,,
+COIN,NEARUSDT,NEAR Protocol,3.03,wait,Y,7,-,,,,20.597,1.793,-85.289,77.412,,,
+COIN,SHIBUSDT,Shiba Inu,1.3e-05,wait,Y,7,-,,,,8.9e-05,1e-05,-85.679,29.283,,,
+COIN,UNIUSDT,Uniswap,8.207,wait,Y,7,-,,,,45.0,7.273,-81.762,15.894,,,
