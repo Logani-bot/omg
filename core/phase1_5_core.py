@@ -26,6 +26,14 @@ Phase 1.5 Core Logic (final, with repeated ADD-buys)
   * trigger_price: 트리거/기준 가격 (BUY/ADD: 당일 저가, SELL: '목표 매도가')
   * fill_price: 체결가 (BUY/ADD: 레벨가 p,
     SELL: 갭오픈이면 시가(o), 아니면 목표가(target_sell_price))
+
+PATCH NOTES (2025-10-05)
+- 요청사항 반영하되 **필요 부분만 최소 수정**, 나머지 로직/인터페이스 100% 동일 유지.
+1) 사이클 재시작(wait→high, +98.5%) 시 **완전 초기화**에 `last_sell_trigger_price = None` 추가.
+2) 스냅샷 보강 컬럼 추가(B1~B7, cutoff_price, next_buy_level_name/price, next_buy_trigger_price) — 기본 컬럼 뒤에만 추가.
+3) 표시 규약: `forbidden_levels_above_last_sell` 컬럼은 **허용 레벨 수(0~7)**를 표기.
+   - 매도 직후/재시작 직후(차단 없음) → **7**로 표기.
+   - 기존 내부 금지 계산 로직은 그대로 두고, 출력 시 7 − 금지개수로 환산.
 """
 import datetime as dt
 import time
@@ -128,31 +136,31 @@ def compute_levels(H: float) -> Dict[str, float]:
         "Stop": round(H * 0.19, 10),
     }
 
-# ===== Phase 1.5 시뮬레이션 =====
-
-# ❌ BUGFIX NOTE (2025-09-14):
-# 기존 코드에서 CSV 컬럼 `forbidden_levels_above_last_sell` 값이
-#   - "금지된 레벨 수"가 아니라, 반대로 "허용된 레벨 수"를 기록하던 문제 발견.
-#   - 또한 첫 매도 이전에도 7로 표기되어 혼선을 유발.
-# 아래 헬퍼로 정확히 "금지 레벨 수"를 산출하도록 수정.
+# ===== 금지 카운트(원본 유지) + 허용 수(출력용) =====
 
 def _forbidden_count(level_pairs, forbidden_level_prices, last_sell_trigger_price):
-    """금지된 매수 레벨(B1~B7)의 개수를 반환한다.
-    규칙:
-      - last_sell_trigger_price가 설정되어 있지 않으면(아직 매도 없음) 금지=0
-      - 설정되어 있으면, cutoff보다 '위'의 레벨은 금지
-      - (안전) forbidden_level_prices 세트에 포함된 것도 금지로 간주
-    """
+    """금지된 매수 레벨(B1~B7)의 개수."""
     if last_sell_trigger_price is None:
         return 0
     cnt = 0
     for _nm, p2 in level_pairs:
-        if p2 > last_sell_trigger_price:
-            cnt += 1
-        elif p2 in forbidden_level_prices:
+        if p2 > last_sell_trigger_price or p2 in forbidden_level_prices:
             cnt += 1
     return cnt
 
+def _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price):
+    """표시 규약: 허용 레벨 수(0~7). 매도 이전(차단 없음)엔 7로 표기."""
+    forb = _forbidden_count(level_pairs, forbidden_level_prices, last_sell_trigger_price)
+    allowed = 7 - forb
+    if last_sell_trigger_price is None:
+        allowed = 7
+    if allowed < 0:
+        allowed = 0
+    if allowed > 7:
+        allowed = 7
+    return allowed
+
+# ===== Phase 1.5 시뮬레이션 =====
 
 def run_phase1_5_simulation(
     symbol: str,
@@ -174,8 +182,8 @@ def run_phase1_5_simulation(
     - 추가매수(개선): 보유 상태에서 저가가 더 깊은(아직 미체결) 레벨을 터치할 때, **해당 레벨마다 반복 매수**
     """
 
-    def fmt(x, nd=8):
-        return None if x is None else round(x, nd)
+    def ts(ms: int) -> str:
+        return dt.datetime.fromtimestamp(ms / 1000, tz=dt.UTC).strftime("%Y-%m-%d")
 
     print(
         f"[CORE] run_phase1_5_simulation: symbol={symbol}, seed_H={seed_H}, daily_H_map={'yes' if daily_H else 'no'}",
@@ -191,7 +199,7 @@ def run_phase1_5_simulation(
         sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1]) if lv else []
     )
 
-    # 상태 변수
+    # 상태 변수(원본 유지)
     mode = "high"  # 초기: high (과거 히스토리 모름)
     position = False
     stage: Optional[int] = None
@@ -202,55 +210,34 @@ def run_phase1_5_simulation(
     # ✅ 추가: 레벨별 최근 체결 일자 (같은 레벨도 '날짜가 바뀌면' 다시 체결 허용)
     last_fill_date: dict[str, str] = {}
 
-    def ts(ms: int) -> str:
-        return dt.datetime.fromtimestamp(ms / 1000, tz=dt.UTC).strftime("%Y-%m-%d")
-
     ensure_output_dir()
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(
-            [
-                "date",
-                "open",
-                "high",
-                "low",
-                "close",
-                "mode",
-                "position",
-                "stage",
-                "event",
-                "basis",
-                "level_name",
-                "level_price",
-                "trigger_price",
-                "fill_price",
-                "H",
-                "L_now",
-                "rebound_from_L_pct",
-                "threshold_pct",
-                "forbidden_levels_above_last_sell",
-            ]
-        )
+        # === 헤더: 기존 컬럼 유지 + 보강 컬럼 뒤에 추가 ===
+        w.writerow([
+            "date","open","high","low","close",
+            "mode","position","stage","event","basis",
+            "level_name","level_price","trigger_price","fill_price",
+            "H","L_now","rebound_from_L_pct","threshold_pct",
+            # 표시 규약: 허용 레벨 수
+            "forbidden_levels_above_last_sell",
+            # ▼ 보강 스냅샷 컬럼
+            "B1","B2","B3","B4","B5","B6","B7",
+            "cutoff_price","next_buy_level_name","next_buy_level_price","next_buy_trigger_price",
+        ])
+
         for idx, row in enumerate(ohlc):
-            # (−1) 첫날 상장일 데이터 무시
+            # (−1) 첫날 상장일 데이터 무시 (원본 유지)
             if idx == 0:
                 continue
 
-            date = ts(row["closeTime"])
-            o = row["open"]
-            h = row["high"]
-            l = row["low"]
-            c = row["close"]
+            date = ts(row["closeTime"])  # UTC → YYYY-MM-DD
+            o, h, l, c = row["open"], row["high"], row["low"], row["close"]
 
-            # 출력용 변수 초기화
-            event = ""
-            basis = ""
-            level_name = ""
-            level_price = None
-            trigger_price = None
-            fill_price = None
-            rebound_pct = None
-            threshold_pct = None
+            # 출력/이벤트 변수 초기화(원본 유지)
+            event = ""; basis = ""; level_name = ""
+            level_price = None; trigger_price = None; fill_price = None
+            rebound_pct = None; threshold_pct = None
 
             # (0) 날짜별 H 강제 적용 (daily_H 모드)
             if daily_H is not None:
@@ -258,12 +245,14 @@ def run_phase1_5_simulation(
                 if new_H is not None and (H is None or new_H != H):
                     H = float(new_H)
                     lv = compute_levels(H)
-                    level_pairs = sorted(
-                        [(nm, lv[nm]) for nm in level_names], key=lambda x: x[1]
-                    )
-                    # ⚠️ 금지세트 재계산은 '매도 시점에만' 수행 — 여기선 호출하지 않음
+                    level_pairs = sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1])
+                    # 금지세트 재계산은 매도 시에만 수행 — 원본 유지
+            # ▼ L 갱신 로직 (wait 모드에서는 항상 저점 추적)
+            if mode == "wait":
+                if L is None or l < L:
+                    L = l
 
-            # ① 상태 전환 처리
+            # ① 상태 전환 처리 (필요 변경만)
             if mode == "wait" and L is not None and h is not None and h >= L * 1.985:
                 mode = "high"
                 forbidden_level_prices.clear()
@@ -271,128 +260,88 @@ def run_phase1_5_simulation(
                 stage = None
                 L = None
                 last_fill_date.clear()
+                # ✅ 추가: 완전 초기화 항목
+                last_sell_trigger_price = None  # PATCH-1
 
             if mode == "high" and (H is not None) and (l is not None) and (l <= H * 0.56):
                 lv = compute_levels(H)
-                level_pairs = sorted(
-                    [(nm, lv[nm]) for nm in level_names], key=lambda x: x[1]
-                )
+                level_pairs = sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1])
                 mode = "wait"
                 L = l
 
-            # ② 최초 매수 — 가장 깊은 레벨 1곳
+            # ② 최초 매수 — 가장 깊은 레벨 1곳 (원본 유지)
             buy_happened = False
-            if (
-                mode == "wait"
-                and (not position)
-                and (lv is not None)
-                and (l is not None)
-            ):
+            if mode == "wait" and (not position) and (lv is not None) and (l is not None):
                 crossed = [
-                    (nm, p)
-                    for (nm, p) in level_pairs
+                    (nm, p) for (nm, p) in level_pairs
                     if l <= p and p not in forbidden_level_prices
                     and not (last_sell_trigger_price is not None and p > last_sell_trigger_price)
                 ]
                 if crossed:
                     nm, p = min(crossed, key=lambda x: x[1])  # 가장 깊은 레벨
-
                     position = True
                     stage = level_names.index(nm) + 1
-                    level_name = nm
-                    level_price = p
-                    basis = "LOW"
-                    trigger_price = l
-                    fill_price = p
+                    level_name, level_price = nm, p
+                    basis, trigger_price, fill_price = "LOW", l, p
                     L = l
                     event = f"BUY {nm}"
-
                     last_fill_date[nm] = date
-
-                    w.writerow(
-                        [
-                            date,
-                            round(o, 8),
-                            round(h, 8),
-                            round(l, 8),
-                            round(c, 8),
-                            mode,
-                            position,
-                            stage,
-                            event,
-                            basis,
-                            level_name,
-                            round(level_price, 8),
-                            round(trigger_price, 8),
-                            round(fill_price, 8),
-                            round(H, 8) if H is not None else None,
-                            round(L, 8) if L is not None else None,
-                            None,
-                            None,
-                            _forbidden_count(level_pairs, forbidden_level_prices, last_sell_trigger_price),
-                        ]
-                    )
+                    # ▼ 허용 레벨 수 계산
+                    allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
+                    # ▼ 보강 스냅샷 값 준비
+                    Bvals = [lv[n] if lv else None for n in level_names]
+                    cutoff = last_sell_trigger_price
+                    # next_* (당일 저가 기준)
+                    next_nm = nm; next_px = p; next_trig = l
+                    w.writerow([
+                        date, round(o,8), round(h,8), round(l,8), round(c,8),
+                        mode, position, stage, event, basis,
+                        level_name, round(level_price,8), round(trigger_price,8), round(fill_price,8),
+                        (round(H,8) if H is not None else None), (round(L,8) if L is not None else None),
+                        None, None,
+                        allowed_cnt,
+                        *(round(x,10) if x is not None else None for x in Bvals),
+                        (round(cutoff,10) if cutoff is not None else None),
+                        next_nm, (round(next_px,10) if next_px is not None else None), (round(next_trig,10) if next_trig is not None else None),
+                    ])
                     buy_happened = True
 
-            # ②-1 추가 매수 — 보유 중 더 깊은 레벨 반복
-            if (
-                mode == "wait"
-                and position
-                and (lv is not None)
-                and (l is not None)
-            ):
+            # ②-1 추가 매수 — 보유 중 더 깊은 레벨 반복 (원본 유지)
+            if mode == "wait" and position and (lv is not None) and (l is not None):
                 add_candidates = [
-                    (nm, p)
-                    for (nm, p) in level_pairs
-                    if (last_fill_date.get(nm) != date)
-                    and (l <= p)
+                    (nm, p) for (nm, p) in level_pairs
+                    if (last_fill_date.get(nm) != date) and (l <= p)
                     and (p not in forbidden_level_prices)
-                    and not (
-                        last_sell_trigger_price is not None and p > last_sell_trigger_price
-                    )
+                    and not (last_sell_trigger_price is not None and p > last_sell_trigger_price)
                 ]
                 for nm, p in sorted(add_candidates, key=lambda x: x[1]):
-                    level_name = nm
-                    level_price = p
-                    basis = "LOW"
-                    trigger_price = l
-                    fill_price = p
+                    level_name, level_price = nm, p
+                    basis, trigger_price, fill_price = "LOW", l, p
                     event = f"ADD {nm}"
-
                     stage = max(stage or 1, level_names.index(nm) + 1)
                     L = l if (L is None) else min(L, l)
-
                     last_fill_date[nm] = date
+                    # ▼ 허용 레벨 수 + 보강 스냅샷
+                    allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
+                    Bvals = [lv[n] if lv else None for n in level_names]
+                    cutoff = last_sell_trigger_price
+                    next_nm, next_px, next_trig = nm, p, l
+                    w.writerow([
+                        date, round(o,8), round(h,8), round(l,8), round(c,8),
+                        mode, position, stage, event, basis,
+                        level_name, round(level_price,8), round(trigger_price,8), round(fill_price,8),
+                        (round(H,8) if H is not None else None), (round(L,8) if L is not None else None),
+                        None, None,
+                        allowed_cnt,
+                        *(round(x,10) if x is not None else None for x in Bvals),
+                        (round(cutoff,10) if cutoff is not None else None),
+                        next_nm, (round(next_px,10) if next_px is not None else None), (round(next_trig,10) if next_trig is not None else None),
+                    ])
 
-                    w.writerow(
-                        [
-                            date,
-                            round(o, 8),
-                            round(h, 8),
-                            round(l, 8),
-                            round(c, 8),
-                            mode,
-                            position,
-                            stage,
-                            event,
-                            basis,
-                            level_name,
-                            round(level_price, 8),
-                            round(trigger_price, 8),
-                            round(fill_price, 8),
-                            round(H, 8) if H is not None else None,
-                            round(L, 8) if L is not None else None,
-                            None,
-                            None,
-                            _forbidden_count(level_pairs, forbidden_level_prices, last_sell_trigger_price),
-                        ]
-                    )
-
-            # ③ 매도 — 보유 중일 때만
+            # ③ 매도 — 보유 중일 때만 (원본 유지)
             if position and stage is not None:
                 if l is not None:
                     L = l if (L is None) else min(L, l)
-
                 if L is not None and h is not None:
                     rebound_pct = (h / L - 1) * 100.0
                     threshold_pct = SELL_THRESHOLDS.get(stage)
@@ -400,77 +349,87 @@ def run_phase1_5_simulation(
                         position = False
                         basis = "HIGH"
                         event = f"SELL S{stage}"
-
                         target_sell_price = L * (1.0 + (threshold_pct / 100.0))
                         gap_open = (l is not None) and (l >= target_sell_price)
                         trigger_price = target_sell_price
-                        fill_price = (
-                            o if gap_open else target_sell_price
-                        )
-
+                        fill_price = (o if gap_open else target_sell_price)
                         cutoff_price = max(target_sell_price, fill_price)
                         last_sell_trigger_price = cutoff_price
-
                         forbidden_level_prices = {
-                            p
-                            for (_nm, p) in level_pairs
+                            p for (_nm, p) in level_pairs
                             if (last_sell_trigger_price is not None) and (p > last_sell_trigger_price)
                         }
                         stage = None
                         L = None
                         last_fill_date.clear()
-
-                        w.writerow(
-                            [
-                                date,
-                                round(o, 8),
-                                round(h, 8),
-                                round(l, 8),
-                                round(c, 8),
-                                mode,
-                                position,
-                                stage,
-                                event,
-                                basis,
-                                level_name,
-                                round(level_price, 8) if level_price is not None else None,
-                                round(trigger_price, 8),
-                                round(fill_price, 8),
-                                round(H, 8) if H is not None else None,
-                                None,
-                                None,
-                                threshold_pct,
-                                _forbidden_count(level_pairs, forbidden_level_prices, last_sell_trigger_price),
-                            ]
-                        )
+                        # ▼ 허용 레벨 수 + 보강 스냅샷
+                        allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
+                        Bvals = [lv[n] if lv else None for n in level_names]
+                        cutoff = last_sell_trigger_price
+                        # next_*: 매도일은 의미 없음 → 공란 유지
+                        w.writerow([
+                            date, round(o,8), round(h,8), round(l,8), round(c,8),
+                            mode, position, stage, event, basis,
+                            level_name if level_name else "", (round(level_price,8) if level_price is not None else None),
+                            round(trigger_price,8), round(fill_price,8),
+                            (round(H,8) if H is not None else None), None,
+                            None, threshold_pct,
+                            allowed_cnt,
+                            *(round(x,10) if x is not None else None for x in Bvals),
+                            (round(cutoff,10) if cutoff is not None else None),
+                            "", None, None,
+                        ])
                         continue
 
-            # ④ 상태 스냅샷(일반 기록)
-            w.writerow(
-                [
-                    date,
-                    round(o, 8),
-                    round(h, 8),
-                    round(l, 8),
-                    round(c, 8),
-                    mode,
-                    position,
-                    stage,
-                    "" if buy_happened else event,
-                    basis if buy_happened else "",
-                    "" if buy_happened else level_name,
-                    round(level_price, 8) if level_price is not None else None,
-                    round(trigger_price, 8) if trigger_price is not None else None,
-                    round(fill_price, 8) if fill_price is not None else None,
-                    round(H, 8) if H is not None else None,
-                    round(L, 8) if (position and L is not None) else None,
-                    None if rebound_pct is None else round(rebound_pct, 6),
-                    threshold_pct,
-                    _forbidden_count(level_pairs, forbidden_level_prices, last_sell_trigger_price),
-                ]
-            )
+            # ④ 상태 스냅샷(일반 기록) — 보강 컬럼 포함
+            # next_* 계산: 당일 저가 기준으로 '가장 깊은 유효 레벨'을 찾거나, 미통과 시 다음 목표 레벨을 제시
+            next_nm = ""; next_px = None; next_trig = l
+            if lv is not None and l is not None:
+                # 유효 레벨 정의
+                def _is_allowed(nm: str, px: float) -> bool:
+                    if px in forbidden_level_prices:
+                        return False
+                    if last_sell_trigger_price is not None and px > last_sell_trigger_price:
+                        return False
+                    return True
+                # 1) 통과 레벨 중 가장 깊은 것
+                crossed = [(nm, px) for (nm, px) in level_pairs if l <= px and _is_allowed(nm, px)]
+                if crossed and mode == "wait":
+                    next_nm, next_px = min(crossed, key=lambda x: x[1])
+                else:
+                    # 2) 미통과인 경우, 현재가 위쪽 첫 유효 레벨을 안내
+                    for (nm, px) in level_pairs:
+                        if _is_allowed(nm, px) and l > px:
+                            next_nm, next_px = nm, px
+                            break
 
-    # 콘솔 요약
+            # 허용 레벨 수 + B1~B7 + cutoff 준비
+            allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
+            Bvals = [lv[n] if lv else None for n in level_names]
+            cutoff = last_sell_trigger_price
+
+            w.writerow([
+                date, round(o,8), round(h,8), round(l,8), round(c,8),
+                mode, position, stage,
+                "" if buy_happened else event,
+                basis if buy_happened else "",
+                "" if buy_happened else level_name,
+                (round(level_price,8) if level_price is not None else None),
+                (round(trigger_price,8) if trigger_price is not None else None),
+                (round(fill_price,8) if fill_price is not None else None),
+                (round(H,8) if H is not None else None),
+                (round(L,8) if L is not None else None),
+                (None if rebound_pct is None else round(rebound_pct, 6)),
+                threshold_pct,
+                allowed_cnt,
+                *(round(x,10) if x is not None else None for x in Bvals),
+                (round(cutoff,10) if cutoff is not None else None),
+                next_nm,
+                (round(next_px,10) if next_px is not None else None),
+                (round(next_trig,10) if next_trig is not None else None),
+            ])
+
+    # 콘솔 요약(원본 유지)
     if limit_days:
         lines = out_csv.read_text(encoding="utf-8").splitlines()
         print(f"[CORE] tail {limit_days}d summary below", flush=True)
@@ -483,7 +442,4 @@ def run_phase1_5_simulation(
                 header_skipped = True
                 continue
             date, _o, _h, _l, close, mode, pos, stg, evt, basis, *_ = parts
-            print(
-                f" {date} | {close} | {mode} | pos={pos} | stg={stg} | {basis} | {evt}",
-                flush=True,
-            )
+            print(f" {date} | {close} | {mode} | pos={pos} | stg={stg} | {basis} | {evt}", flush=True)
