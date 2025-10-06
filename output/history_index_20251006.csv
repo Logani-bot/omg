@@ -2,30 +2,30 @@ symbol,name,shadow_csv,last_date,last_event,H,L_now
 SUIUSDT,Sui,output\shadow\SUIUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,5.3687,2.2937
 ETHUSDT,Ethereum,output\shadow\ETHUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,4956.78,
 BTCUSDT,Bitcoin,output\shadow\BTCUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,125708.42,
-BNBUSDT,BNB,output\shadow\BNBUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1192.42,
+XRPUSDT,XRP,output\shadow\XRPUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,3.6607,
+SOLUSDT,Solana,output\shadow\SOLUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,295.83,155.83
 ADAUSDT,Cardano,output\shadow\ADAUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,3.101,0.7542
+DOGEUSDT,Dogecoin,output\shadow\DOGEUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,0.73995,0.18845
+TRXUSDT,TRON,output\shadow\TRXUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,0.45,0.2011
+BNBUSDT,BNB,output\shadow\BNBUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1192.42,
 XLMUSDT,Stellar,output\shadow\XLMUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,0.7985,0.2976
 LINKUSDT,Chainlink,output\shadow\LINKUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,53.0,15.43
-SOLUSDT,Solana,output\shadow\SOLUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,295.83,155.83
-TRXUSDT,TRON,output\shadow\TRXUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,0.45,0.2011
-DOGEUSDT,Dogecoin,output\shadow\DOGEUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,0.73995,0.18845
-XRPUSDT,XRP,output\shadow\XRPUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,3.6607,
 AVAXUSDT,Avalanche,output\shadow\AVAXUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,147.0,25.75
 TONUSDT,Toncoin,output\shadow\TONUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,7.269,2.354
 ENAUSDT,Ethena,output\shadow\ENAUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1.523,0.5343
 PEPEUSDT,Pepe,output\shadow\PEPEUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,2.836e-05,8.3e-06
 BCHUSDT,Bitcoin Cash,output\shadow\BCHUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1650.0,436.9
-ONDOUSDT,Ondo,output\shadow\ONDOUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1.1695,0.6214
-SHIBUSDT,Shiba Inu,output\shadow\SHIBUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,8.854e-05,1.004e-05
-TAOUSDT,Bittensor,output\shadow\TAOUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1249.0,287.5
-LTCUSDT,Litecoin,output\shadow\LTCUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,413.49,100.25
 HBARUSDT,Hedera,output\shadow\HBARUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,0.576,0.19632
-USD1USDT,USD1,output\shadow\USD1USDT_phase1_5_shadow_20251006.csv,2025-10-05,,1.03,
-DOTUSDT,Polkadot,output\shadow\DOTUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,55.09,3.007
-AAVEUSDT,Aave,output\shadow\AAVEUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,668.0,208.83
-UNIUSDT,Uniswap,output\shadow\UNIUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,45.0,7.273
-APTUSDT,Aptos,output\shadow\APTUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,100.0,3.747
+ONDOUSDT,Ondo,output\shadow\ONDOUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1.1695,0.6214
 BNSOLUSDT,Binance Staked SOL,output\shadow\BNSOLUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,302.5,
+TAOUSDT,Bittensor,output\shadow\TAOUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1249.0,287.5
+SHIBUSDT,Shiba Inu,output\shadow\SHIBUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,8.854e-05,1.004e-05
+USD1USDT,USD1,output\shadow\USD1USDT_phase1_5_shadow_20251006.csv,2025-10-05,,1.03,
+APTUSDT,Aptos,output\shadow\APTUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,100.0,3.747
+AAVEUSDT,Aave,output\shadow\AAVEUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,668.0,208.83
+DOTUSDT,Polkadot,output\shadow\DOTUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,55.09,3.007
+LTCUSDT,Litecoin,output\shadow\LTCUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,413.49,100.25
+UNIUSDT,Uniswap,output\shadow\UNIUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,45.0,7.273
 POLUSDT,POL (ex-MATIC),output\shadow\POLUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,1.0,0.1519
-ETCUSDT,Ethereum Classic,output\shadow\ETCUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,179.83,17.56
 NEARUSDT,NEAR Protocol,output\shadow\NEARUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,20.597,1.793
+ETCUSDT,Ethereum Classic,output\shadow\ETCUSDT_phase1_5_shadow_20251006.csv,2025-10-05,,179.83,17.56
