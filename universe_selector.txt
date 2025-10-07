@@ -1,0 +1,141 @@
+앞으로 확장할 때 딱 이것만 하시면 됩니다
+1) 유니버스(리스트) 추가
+
+준비물: data/top_200_us_stocks.csv (컬럼: Symbol, MarketCap)
+
+이미 universe_selector.py에 get_top200_us_stocks()가 있으니 파일만 넣으면 바로 작동합니다.
+
+실행:
+
+python universe_selector.py --asset us
+
+
+(선택) 저장:
+
+필요 시 get_top200_us_stocks() 안에서 to_csv 한 줄 추가해 저장하시거나,
+
+별도 한 줄로 저장:
+
+from universe_selector import get_top200_us_stocks
+import pandas as pd; pd.DataFrame(get_top200_us_stocks()).to_csv("data/top_list_us.csv", index=False)
+
+2) OHLC 다운로드 어댑터 추가 (미국주식/ETF)
+
+코인은 바이낸스 그대로, 미국주식/ETF는 야후 파이낸스로 받으면 됩니다.
+
+config/adapters.py (없으면 파일 새로 생성) 최소 구현 예:
+
+# config/adapters.py
+import pandas as pd
+import yfinance as yf
+
+class BinanceAdapter:
+    # ... (기존 그대로 사용)
+
+class YahooAdapter:
+    @staticmethod
+    def get_ohlc_daily(ticker: str, period: str = "max") -> pd.DataFrame:
+        df = yf.download(ticker, period=period, interval="1d", auto_adjust=False)
+        df = df.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
+        df = df.reset_index().rename(columns={"Date":"date"})
+        # 결측/비정상치 최소 정리
+        return df[["date","open","high","low","close","volume"]].dropna()
+
+3) 빌더에서 자산군 스위치만 추가
+
+auto_debug_builder.py에 아래만 반영:
+
+from universe_selector import get_universe
+from config.adapters import BinanceAdapter, YahooAdapter
+from phase1_5_core import compute_omg_debug
+
+def run(asset="coin", limit_days=1200):
+    if asset == "coin":
+        symbols = [row["Symbol"] for row in get_universe("coin")]
+        client = BinanceAdapter()
+    else:  # 'us'
+        symbols = [row["Symbol"] for row in get_universe("us")]
+        client = YahooAdapter()
+
+    for sym in symbols:
+        df = client.get_ohlc_daily(sym)
+        if limit_days:
+            df = df.tail(limit_days)
+        dbg = compute_omg_debug(df)
+        dbg.to_csv(f"output/{sym}_debug.csv", index=False)
+
+
+실행 예:
+
+# 코인 Top30 디버그 생성
+python auto_debug_builder.py --asset coin --limit-days 1200
+
+# 미국주식 Top200 디버그 생성
+python auto_debug_builder.py --asset us --limit-days 1200
+
+
+핵심: 유니버스는 universe_selector.py 한 곳에서만 관리,
+실제 데이터 수집은 어댑터에서 자산군별로 분기,
+분석 로직(phase1_5_core)은 그대로 재사용.
+
+나중에 GPT에 요청할 때 쓰실 “복붙 프롬프트”
+
+필요할 때 그대로 붙여넣어 쓰세요.
+괄호 안만 바꿔서 요청하시면 됩니다.
+
+1) 미국 주식(또는 ETF) 리스트 붙일 때
+프로젝트 OMG 상반부(Top 리스트 → 디버그 CSV) 확장 작업입니다.
+목표: universe_selector.py 기준으로 'us' 유니버스(미국 주식 또는 ETF) 추가.
+
+요구사항:
+1) data/top_200_us_stocks.csv 파일을 사용 (컬럼: Symbol, MarketCap).
+2) universe_selector.py의 get_top200_us_stocks()로 리스트를 가져와
+   [{"Rank","Symbol","Name","MarketCap(USD)"}] 구조로 반환.
+3) auto_debug_builder.py에서 --asset us 옵션을 주면
+   Yahoo Finance(yfinance)로 OHLC 일봉을 받고
+   phase1_5_core.compute_omg_debug()로 디버그 CSV를 output/{SYMBOL}_debug.csv 로 저장.
+
+체크리스트:
+- universe_selector.py: 'coin'/'us' 분기 유지, coin은 CoinGecko 시총 Top30.
+- config/adapters.py: YahooAdapter.get_ohlc_daily(ticker) 구현.
+- auto_debug_builder.py: --asset {coin|us}, --limit-days {N} 처리.
+- 출력 경로 고정: output/{SYMBOL}_debug.csv
+- 에러 발생 시 심볼/메시지 로깅.
+
+현재 코드 버전:
+- universe_selector.py 최신본 유지 (CoinGecko 안정 호출 포함)
+- phase1_5_core.py 변동 없음
+- adapters.py 없으면 새로 생성
+
+필요 산출물:
+- 수정된/추가된 코드 블록만 제시 (파일별 구역 주석 달기)
+- 실행 예시 명령 포함
+
+2) 특정 ETF 유니버스 따로 돌릴 때 (예: S&P 500 ETF 50종)
+OMG 상반부 확장: ETF 유니버스 전용 리스트를 universe_selector.py에 추가하고,
+auto_debug_builder.py에서 --asset etf 옵션으로 돌리게 해주세요.
+
+요구사항:
+- data/top_etf_list.csv (컬럼: Symbol, MarketCap) 읽어서
+  get_top_etf_list() 함수 추가.
+- get_universe('etf') 분기 추가.
+- auto_debug_builder.py에서 'etf'면 YahooAdapter 경로로 동일 처리.
+- output/{SYMBOL}_debug.csv 로 저장.
+
+마지막에:
+- universe_selector.py, auto_debug_builder.py, adapters.py 수정 블록만 제시
+- 실행 명령 예시 포함
+
+마지막 정리
+
+지금 상태: 코인 Top30 → 정상 동작, CSV 저장 OK
+
+미국 주식/ETF 추가 시:
+
+data에 리스트 파일만 넣기
+
+YahooAdapter 1개만 추가
+
+auto_debug_builder.py에 --asset us 분기 추가
+
+핵심 로직(H 계산)은 그대로 재사용 → 변경 최소화
