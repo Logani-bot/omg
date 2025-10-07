@@ -1,0 +1,2 @@
+date,open,high,low,close,mode,position,stage,event,basis,level_name,level_price,trigger_price,fill_price,H,L_now,rebound_from_L_pct,threshold_pct,forbidden_levels_above_last_sell,B1,B2,B3,B4,B5,B6,B7,cutoff_price,next_buy_level_name,next_buy_level_price,next_buy_trigger_price
+2025-10-07,2.064,2.117,2.035,2.045,high,False,,,,,,,,3.0,,,,7,1.68,1.56,1.38,1.23,1.05,0.84,0.63,,B7,0.63,2.035
