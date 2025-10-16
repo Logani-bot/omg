@@ -28,7 +28,7 @@ except Exception:
 # 공통 설정
 # -----------------------------
 VS_CURRENCY = "usd"
-TOP_N = 30
+TOP_N = 100
 URL_TOP = "https://api.coingecko.com/api/v3/coins/markets"
 
 EXCLUDE_SYMBOLS = {"WBTC", "WETH", "WBETH", "STETH", "WSTETH", "WEETH"}
@@ -62,46 +62,65 @@ def http_get(url: str, params: dict) -> list:
 # 코인: CoinGecko 기준 시가총액 Top 30
 # -----------------------------
 def get_top30_coins() -> List[Dict[str, Any]]:
-    """CoinGecko 기준 시가총액 Top 30 코인 + CSV 저장"""
-    params = {
-        "vs_currency": VS_CURRENCY,
-        "order": "market_cap_desc",
-        "per_page": TOP_N,
-        "page": 1,
-        "price_change_percentage": "24h",
-        "locale": "en",
-    }
-
-    data = http_get(URL_TOP, params)
-    if not data or not isinstance(data, list):
-        print("⚠️  CoinGecko 응답이 비어 있거나 잘못되었습니다.")
-        return []
-
+    """CoinGecko 기준 시가총액 Top 100 코인 + CSV 저장"""
     coins = []
-    for i, row in enumerate(data, start=1):
-        try:
-            cap_raw = row.get("market_cap", 0)
-            if isinstance(cap_raw, str):
-                cap_raw = cap_raw.replace(",", "").strip()
-            cap = float(cap_raw)
-        except Exception:
-            cap = 0.0
+    page = 1
+    per_page = 100  # CoinGecko API 한 번에 최대 250개까지 가능
+    
+    # 필터링 후 TOP_N개 수집될 때까지 반복
+    while len(coins) < TOP_N:
+        params = {
+            "vs_currency": VS_CURRENCY,
+            "order": "market_cap_desc",
+            "per_page": per_page,
+            "page": page,
+            "price_change_percentage": "24h",
+            "locale": "en",
+        }
 
-        sym = (row.get("symbol") or "").upper() + "USDT"
-        name = row.get("name", "")
+        data = http_get(URL_TOP, params)
+        if not data or not isinstance(data, list):
+            print(f"CoinGecko page {page} failed")
+            break
+        
+        if len(data) == 0:
+            break
 
-        # 제외 조건
-        if sym.replace("USDT", "") in EXCLUDE_SYMBOLS:
-            continue
-        if any(k in name.upper() for k in EXCLUDE_NAME_KEYWORDS):
-            continue
+        for row in data:
+            try:
+                cap_raw = row.get("market_cap", 0)
+                if isinstance(cap_raw, str):
+                    cap_raw = cap_raw.replace(",", "").strip()
+                cap = float(cap_raw)
+            except Exception:
+                cap = 0.0
 
-        coins.append({
-            "Rank": i,
-            "Symbol": sym,
-            "Name": name,
-            "MarketCap(USD)": round(cap, 2)
-        })
+            sym = (row.get("symbol") or "").upper() + "USDT"
+            name = row.get("name", "")
+
+            # 제외 조건
+            if sym.replace("USDT", "") in EXCLUDE_SYMBOLS:
+                continue
+            if any(k in name.upper() for k in EXCLUDE_NAME_KEYWORDS):
+                continue
+
+            rank = row.get("market_cap_rank", len(coins) + 1)
+            coins.append({
+                "Rank": rank,
+                "Symbol": sym,
+                "Name": name,
+                "MarketCap(USD)": round(cap, 2)
+            })
+            
+            # TOP_N개 수집되면 중단
+            if len(coins) >= TOP_N:
+                break
+        
+        page += 1
+        
+        # 최대 3페이지까지만 시도 (300개)
+        if page > 3:
+            break
 
     # CSV 저장
     os.makedirs("data", exist_ok=True)
@@ -114,7 +133,7 @@ def get_top30_coins() -> List[Dict[str, Any]]:
             writer = csv.DictWriter(f, fieldnames=["Rank", "Symbol", "Name", "MarketCap(USD)"])
             writer.writeheader()
             writer.writerows(coins)
-    print(f"✅ Coin Top{TOP_N} 리스트 저장 완료: {csv_path}")
+    print(f"Coin Top{TOP_N} list saved: {csv_path}")
     return coins
 
 
@@ -158,6 +177,12 @@ def get_top200_us_stocks(path: str | None = None) -> List[Dict[str, Any]]:
             "MarketCap(USD)": round(cap, 2)
         })
     return stocks
+
+
+def get_top30_symbols() -> List[str]:
+    """Top 30 코인의 심볼 리스트만 반환 (USDT 포함)"""
+    coins = get_top30_coins()
+    return [coin["Symbol"] for coin in coins]
 
 
 # -----------------------------

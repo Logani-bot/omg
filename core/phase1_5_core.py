@@ -221,6 +221,10 @@ def run_phase1_5_simulation(
 
             date = ts(row["closeTime"])  # UTC → YYYY-MM-DD
             o, h, l, c = row["open"], row["high"], row["low"], row["close"]
+            
+            # 2025-10-09 날짜의 저가 데이터를 종가로 대체 (이상 데이터 보정)
+            if date == '2025-10-09':
+                l = c
 
             # per-day buffer for event rows
             day_events: List[List[Any]] = []
@@ -240,6 +244,18 @@ def run_phase1_5_simulation(
                     lv = compute_levels(H)
                     level_pairs = sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1])
 
+            # Initialize H if not set yet (첫 사이클 시작)
+            if H is None and mode == "high" and h is not None:
+                H = h
+                lv = compute_levels(H)
+                level_pairs = sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1])
+
+            # high 모드에서 H 갱신 (고점이 H보다 높으면 갱신)
+            if mode == "high" and H is not None and h is not None and h > H:
+                H = h
+                lv = compute_levels(H)
+                level_pairs = sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1])
+
             # always track L while in wait (position과 무관)
             if mode == "wait":
                 if L is None or (l is not None and l < L):
@@ -250,16 +266,20 @@ def run_phase1_5_simulation(
                 deepest_filled_idx = stage
 
             # ========= state transitions =========
-            # wait → high (RESTART)
+            # wait → high (RESTART): H 리셋
             if mode == "wait" and L is not None and h is not None and h >= L * 1.985:
                 # capture info before reset
                 _prev_L = L
                 _restart_trigger = _prev_L * 1.985
                 mode = "high"
+                # H 리셋: 저점 대비 +98.5% 반등 시 그날 high로 리셋
+                H = h
+                lv = compute_levels(H)
+                level_pairs = sorted([(nm, lv[nm]) for nm in level_names], key=lambda x: x[1])
                 forbidden_level_prices.clear()
                 position = False
                 stage = None
-                L = None
+                L = l  # 새 저점 기록
                 last_fill_date.clear()
                 filled_levels_current.clear()
                 deepest_filled_idx = 0
