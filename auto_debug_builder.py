@@ -4,6 +4,10 @@ import pathlib
 from typing import Optional
 
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from config.adapters import BinanceClient
 from universe_selector import get_top30_coins, get_top30_symbols
@@ -12,6 +16,41 @@ from core.phase1_5_core import run_phase1_5_simulation
 
 OUTPUT_DIR = pathlib.Path("debug")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def convert_csv_to_excel(csv_path: pathlib.Path) -> pathlib.Path:
+    """CSV 파일을 Excel 파일로 변환하고 A열 너비 조정 및 1행 고정"""
+    excel_path = csv_path.with_suffix('.xlsx')
+    
+    # CSV 파일 읽기
+    df = pd.read_csv(csv_path)
+    
+    # Excel 파일 생성
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Debug Data"
+    
+    # DataFrame을 Excel에 추가
+    for r in dataframe_to_rows(df, index=False, header=True):
+        ws.append(r)
+    
+    # A열 너비 조정 (날짜 컬럼)
+    ws.column_dimensions['A'].width = 15
+    
+    # 1행 고정 (헤더 고정)
+    ws.freeze_panes = 'A2'
+    
+    # 헤더 스타일링
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+    
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    
+    # Excel 파일 저장
+    wb.save(excel_path)
+    return excel_path
 
 
 def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None, top_n: int = 100) -> list[str]:
@@ -97,9 +136,12 @@ def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None, top_n
                 limit_days=limit_days
             )
             
-            produced.append(str(out_path))
+            # CSV를 Excel로 변환
+            excel_path = convert_csv_to_excel(out_path)
+            
+            produced.append(str(excel_path))
             successful += 1
-            print(f"OK 완료 ({len(ohlc_data)}일 데이터)")
+            print(f"OK 완료 ({len(ohlc_data)}일 데이터, Excel 변환)")
             
         except Exception as e:
             failed += 1

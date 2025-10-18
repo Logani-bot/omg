@@ -19,9 +19,6 @@ import requests
 import time
 from datetime import datetime
 
-# 매수선 비율 (H값에서 빠진 비율)
-BUY_LEVEL_RATIOS = [0.44, 0.48, 0.54, 0.59, 0.65, 0.72, 0.79]
-
 # 제외할 심볼들 (래핑된 토큰)
 EXCLUDE_SYMBOLS = {"WBTC", "WETH", "WBETH", "STETH", "WSTETH", "WEETH"}
 EXCLUDE_NAME_KEYWORDS = {"WRAPPED", "BRIDGE"}
@@ -32,13 +29,13 @@ class CoinAnalysisExcel:
         self.state_dir = pathlib.Path("debug")  # debug 폴더의 디버그 파일 사용
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-    def get_top30_coins_with_prices(self) -> List[Dict]:
-        """CoinGecko에서 Top 50 코인 정보와 현재가를 가져옴"""
+    def get_top100_coins_with_prices(self) -> List[Dict]:
+        """CoinGecko에서 Top 100 코인 정보와 현재가를 가져옴"""
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
             "order": "market_cap_desc",
-            "per_page": 50,
+            "per_page": 100,
             "page": 1,
             "price_change_percentage": "24h",
             "locale": "en",
@@ -73,8 +70,8 @@ class CoinAnalysisExcel:
                 })
                 rank += 1
                 
-                # Top 50개까지만
-                if len(coins) >= 50:
+                # Top 100개까지만
+                if len(coins) >= 100:
                     break
             
             return coins
@@ -83,60 +80,130 @@ class CoinAnalysisExcel:
             print(f"코인 정보 수집 실패: {e}")
             return []
     
-    def get_latest_h_value(self, symbol: str) -> Optional[float]:
-        """디버그 파일에서 가장 최근 일자의 H값을 가져옴"""
+    def get_latest_buy_progress(self, symbol: str) -> Dict:
+        """EVENT 기반으로 다음 매수 목표를 결정하는 새로운 로직"""
         debug_file = self.state_dir / f"{symbol}_debug.csv"
         
         if not debug_file.exists():
-            return None
+            return {"status": "no_debug_file", "next_buy_target": None, "current_price": None, "h_value": None}
             
         try:
             df = pd.read_csv(debug_file)
             if df.empty:
-                return None
-                
-            # H 컬럼에서 유효한 값 중 가장 최근 값 찾기
-            if 'H' in df.columns:
-                h_values = df['H'].dropna()
-                if not h_values.empty:
-                    return float(h_values.iloc[-1])
+                return {"status": "empty_debug", "next_buy_target": None, "current_price": None, "h_value": None}
             
-            # H값이 없으면 최근 high 값들의 최대값을 사용
-            if 'high' in df.columns:
-                recent_highs = df['high'].tail(30)  # 최근 30일
-                if not recent_highs.empty:
-                    return float(recent_highs.max())
-                    
-            return None
+            # 가장 최근 데이터
+            latest_row = df.iloc[-1]
+            current_price = latest_row['close']
+            h_value = latest_row['H'] if pd.notna(latest_row['H']) else None
+            
+            if not h_value:
+                return {"status": "no_h_value", "next_buy_target": None, "current_price": current_price, "h_value": None}
+            
+            # DEBUG 파일에서 B1~B7 값 직접 가져오기
+            buy_levels = {
+                'B1': latest_row['B1'] if pd.notna(latest_row['B1']) else None,
+                'B2': latest_row['B2'] if pd.notna(latest_row['B2']) else None,
+                'B3': latest_row['B3'] if pd.notna(latest_row['B3']) else None,
+                'B4': latest_row['B4'] if pd.notna(latest_row['B4']) else None,
+                'B5': latest_row['B5'] if pd.notna(latest_row['B5']) else None,
+                'B6': latest_row['B6'] if pd.notna(latest_row['B6']) else None,
+                'B7': latest_row['B7'] if pd.notna(latest_row['B7']) else None,
+            }
+            
+            # EVENT가 있는 행들만 필터링
+            events_df = df[df['event'].notna() & (df['event'] != '')]
+            
+            if events_df.empty:
+                # EVENT가 없으면 B1이 다음 목표
+                next_buy_target = "B1"
+                next_buy_price = buy_levels['B1']
+                status = "no_events_b1_target"
+            else:
+                # 가장 최근 EVENT 분석
+                latest_event_row = events_df.iloc[-1]
+                latest_event = latest_event_row['event']
+                
+                if latest_event.startswith('BUY') or latest_event.startswith('ADD'):
+                    # BUY/ADD 이벤트: 한 차수 아래가 다음 목표
+                    stage = latest_event_row['stage']
+                    if pd.notna(stage) and str(stage).isdigit():
+                        stage_num = int(stage)
+                        if stage_num < 7:
+                            next_buy_target = f"B{stage_num + 1}"
+                            next_buy_price = buy_levels[next_buy_target]
+                            status = f"buy_add_next_target_{next_buy_target}"
+                        else:
+                            # B7까지 완료된 경우
+                            next_buy_target = "B7"
+                            next_buy_price = buy_levels['B7']
+                            status = "buy_add_max_level"
+                    else:
+                        # stage 정보가 없으면 B2가 목표
+                        next_buy_target = "B2"
+                        next_buy_price = buy_levels['B2']
+                        status = "buy_add_no_stage_b2"
+                
+                elif latest_event.startswith('SELL'):
+                    # SELL 이벤트: forbidden_levels_above_last_sell 값에 따라 다음 목표 결정
+                    forbidden_levels = latest_event_row['forbidden_levels_above_last_sell']
+                    if pd.notna(forbidden_levels) and str(forbidden_levels).isdigit():
+                        forbidden_num = int(forbidden_levels)
+                        if forbidden_num == 0:
+                            # 모든 레벨이 금지된 경우 (매수 금지)
+                            next_buy_target = None
+                            next_buy_price = None
+                            status = "sell_all_forbidden"
+                        elif forbidden_num == 7:
+                            # 금지 레벨 없음, B1이 목표
+                            next_buy_target = "B1"
+                            next_buy_price = buy_levels['B1']
+                            status = "sell_no_forbidden_b1"
+                        else:
+                            # forbidden_num = 6이면 B1 금지, B2가 목표
+                            # forbidden_num = 5이면 B1-B2 금지, B3이 목표
+                            # forbidden_num = 1이면 B1-B6 금지, B7이 목표
+                            # 공식: B{8 - forbidden_num}
+                            next_buy_target = f"B{8 - forbidden_num}"
+                            next_buy_price = buy_levels[next_buy_target]
+                            status = f"sell_forbidden_next_{next_buy_target}"
+                    else:
+                        # forbidden 정보가 없으면 B1이 목표
+                        next_buy_target = "B1"
+                        next_buy_price = buy_levels['B1']
+                        status = "sell_no_forbidden_b1"
+                
+                elif latest_event == 'RESTART_+98.5pct':
+                    # RESTART 이벤트: 사이클 초기화로 B1이 목표
+                    next_buy_target = "B1"
+                    next_buy_price = buy_levels['B1']
+                    status = "restart_b1_target"
+                
+                else:
+                    # 기타 이벤트: B1이 목표
+                    next_buy_target = "B1"
+                    next_buy_price = buy_levels['B1']
+                    status = "other_event_b1_target"
+            
+            if next_buy_price is not None:
+                distance_pct = ((current_price - next_buy_price) / next_buy_price) * 100
+                return {
+                    "status": status,
+                    "next_buy_target": next_buy_target,
+                    "next_buy_price": next_buy_price,
+                    "current_price": current_price,
+                    "h_value": h_value,
+                    "buy_levels": buy_levels,
+                    "distance_pct": distance_pct
+                }
+            else:
+                return {"status": "no_target_price", "next_buy_target": None, "current_price": current_price, "h_value": h_value, "buy_levels": buy_levels}
             
         except Exception as e:
-            print(f"{symbol} H값 추출 실패: {e}")
-            return None
+            print(f"{symbol} 매수 진행 상황 분석 실패: {e}")
+            return {"status": "error", "next_buy_target": None, "current_price": None, "h_value": None}
     
-    def calculate_buy_levels(self, h_value: float) -> Dict[str, float]:
-        """H값에서 매수선들을 계산"""
-        buy_levels = {}
-        for i, ratio in enumerate(BUY_LEVEL_RATIOS, 1):
-            level_price = h_value * (1 - ratio)
-            buy_levels[f"B{i}"] = level_price
-            
-        return buy_levels
     
-    def find_closest_buy_level(self, current_price: float, buy_levels: Dict[str, float]) -> Tuple[str, float, float]:
-        """현재가보다 낮은 매수선 중 가장 큰 금액과 거리 계산"""
-        valid_levels = {k: v for k, v in buy_levels.items() if v < current_price}
-        
-        if not valid_levels:
-            return "", 0.0, 0.0
-            
-        # 가장 큰 금액의 매수선 찾기
-        closest_level = max(valid_levels.items(), key=lambda x: x[1])
-        level_name, level_price = closest_level
-        
-        # 거리 계산 (%)
-        distance_pct = ((current_price - level_price) / level_price) * 100
-        
-        return level_name, level_price, distance_pct
     
     def format_market_cap(self, market_cap: float) -> str:
         """시가총액을 억 단위로 포맷팅"""
@@ -163,8 +230,8 @@ class CoinAnalysisExcel:
     
     def create_analysis_excel(self):
         """종합 분석 엑셀 파일 생성"""
-        print("Top 50 코인 정보 수집 중...")
-        coins = self.get_top30_coins_with_prices()
+        print("Top 100 코인 정보 수집 중...")
+        coins = self.get_top100_coins_with_prices()
         
         if not coins:
             print("코인 정보를 가져올 수 없습니다.")
@@ -181,46 +248,47 @@ class CoinAnalysisExcel:
             
             print(f"{symbol} 분석 중...")
             
-            # H값 가져오기
-            h_value = self.get_latest_h_value(symbol)
+            # 매수 진행 상황 분석
+            buy_progress = self.get_latest_buy_progress(symbol)
             
-            if h_value is None:
-                print(f"  {symbol}: H값 없음")
+            if buy_progress["status"] in ["no_debug_file", "empty_debug", "no_h_value", "error"]:
+                print(f"  {symbol}: {buy_progress['status']}")
                 analysis_data.append({
                     **coin,
-                    "시가총액": self.format_market_cap(coin["시가총액"]),  # 억 단위로 포맷팅
-                    "현재가": self.format_price(coin["현재가"]),  # 콤마 포맷팅
+                    "시가총액": self.format_market_cap(coin["시가총액"]),
+                    "현재가": self.format_price(coin["현재가"]),
                     "H값": "",
                     "B1": "", "B2": "", "B3": "", "B4": "", 
                     "B5": "", "B6": "", "B7": "",
-                    "가장가까운매수선": "",
-                    "매수선가격": "",
-                    "거리(%)": None
+                    "다음매수목표": "",
+                    "목표가격": "",
+                    "이격도(%)": None,
+                    "상태": buy_progress["status"]
                 })
                 continue
             
-            # 매수선 계산
-            buy_levels = self.calculate_buy_levels(h_value)
+            # 매수 진행 상황이 있는 경우
+            h_value = buy_progress["h_value"]
+            next_target = buy_progress["next_buy_target"]
+            next_price = buy_progress["next_buy_price"]
+            distance_pct = buy_progress["distance_pct"]
+            buy_levels = buy_progress["buy_levels"]
             
-            # 가장 가까운 매수선 찾기
-            closest_level, level_price, distance = self.find_closest_buy_level(
-                current_price, buy_levels
-            )
+            # DEBUG 파일에서 가져온 B1~B7 값 포맷팅
+            formatted_buy_levels = {k: self.format_price(v, h_value) if v is not None else "" for k, v in buy_levels.items()}
             
-            print(f"  {symbol}: H={h_value:.2f}, 현재가={current_price:.2f}, 가장가까운={closest_level}")
-            
-            # 매수선들을 콤마 포맷팅 (H값에 따라 소수점 자릿수 조정)
-            formatted_buy_levels = {k: self.format_price(v, h_value) for k, v in buy_levels.items()}
+            print(f"  {symbol}: H={h_value:.2f}, 현재가={current_price:.2f}, 다음목표={next_target}, 이격도={distance_pct:.1f}%")
             
             analysis_data.append({
                 **coin,
-                "시가총액": self.format_market_cap(coin["시가총액"]),  # 억 단위로 포맷팅
-                "현재가": self.format_price(coin["현재가"], h_value),  # H값에 따라 소수점 조정
-                "H값": self.format_price(h_value, h_value),  # H값에 따라 소수점 조정
+                "시가총액": self.format_market_cap(coin["시가총액"]),
+                "현재가": self.format_price(coin["현재가"], h_value),
+                "H값": self.format_price(h_value, h_value),
                 **formatted_buy_levels,
-                "가장가까운매수선": closest_level,
-                "매수선가격": self.format_price(level_price, h_value),  # H값에 따라 소수점 조정
-                "거리(%)": distance if distance else None  # 숫자(float)로 저장
+                "다음매수목표": next_target,
+                "목표가격": self.format_price(next_price, h_value),
+                "이격도(%)": distance_pct,
+                "상태": buy_progress["status"]
             })
             
             # API 호출 제한 방지
@@ -233,7 +301,7 @@ class CoinAnalysisExcel:
         columns = [
             "순위", "코인명", "심볼", "시가총액", "현재가", "24h변동률",
             "H값", "B1", "B2", "B3", "B4", "B5", "B6", "B7",
-            "가장가까운매수선", "매수선가격", "거리(%)"
+            "다음매수목표", "목표가격", "이격도(%)", "상태"
         ]
         
         df = df[columns]
@@ -296,10 +364,10 @@ class CoinAnalysisExcel:
         print(f"H값이 있는 코인: {len(valid_data)}개")
         
         if len(valid_data) > 0:
-            # 거리(%) 컬럼을 숫자로 변환 (빈 문자열은 NaN으로 처리)
-            valid_data['거리(%)'] = pd.to_numeric(valid_data['거리(%)'], errors='coerce')
-            avg_distance = valid_data['거리(%)'].mean()
-            print(f"평균 매수선 거리: {avg_distance:.2f}%")
+            # 이격도(%) 컬럼을 숫자로 변환 (빈 문자열은 NaN으로 처리)
+            valid_data['이격도(%)'] = pd.to_numeric(valid_data['이격도(%)'], errors='coerce')
+            avg_distance = valid_data['이격도(%)'].mean()
+            print(f"평균 매수 목표 이격도: {avg_distance:.2f}%")
         
         return excel_path
 
