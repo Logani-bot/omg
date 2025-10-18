@@ -77,7 +77,14 @@ class BinanceClient:
             open_ts = int(k[0]) // 1000
             # Shift UTC open time to KST and normalize date
             dt_kst = datetime.fromtimestamp(open_ts, tz=timezone.utc).astimezone(KST)
-            date_only = datetime(dt_kst.year, dt_kst.month, dt_kst.day, tzinfo=KST)
+            
+            # 일봉 시작 시간 고려: UTC 00:00 = KST 09:00
+            # 한국시간 09:00 이전이면 전날 일봉으로 처리
+            if dt_kst.hour < 9:  # 아직 전날 일봉
+                date_only = datetime(dt_kst.year, dt_kst.month, dt_kst.day - 1, tzinfo=KST)
+            else:  # 오늘 일봉
+                date_only = datetime(dt_kst.year, dt_kst.month, dt_kst.day, tzinfo=KST)
+            
             rows.append({
                 "date": date_only,
                 "open": float(k[1]),

@@ -1,2 +1,0 @@
-universe,symbol,name,market_cap,last_price,mode,in_position,stage,next_buy_level,next_buy_price,pct_to_next_buy,pct_to_next_buy_abs,H,L_now,drawdown_from_H_pct,rebound_from_L_pct,buy_allowed_today,sell_restricted,notes
-COIN,ZECUSDT,Zcash,2703798354.0,165.72,high,N,0,B7,13.3119,-91.967,91.967,63.39,,161.429,,,,

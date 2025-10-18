@@ -123,8 +123,8 @@ def get_top30_coins() -> List[Dict[str, Any]]:
             break
 
     # CSV 저장
-    os.makedirs("data", exist_ok=True)
-    csv_path = os.path.join("data", "top_list_coin.csv")
+    os.makedirs("debug", exist_ok=True)
+    csv_path = os.path.join("debug", "top_list_coin.csv")
     if pd:
         pd.DataFrame(coins).to_csv(csv_path, index=False)
     else:

@@ -40,7 +40,7 @@ URL_KLINES = f"{BINANCE_BASE}/api/v3/klines"
 # SELL thresholds (% rebound from L)
 SELL_THRESHOLDS = {1: 7.7, 2: 17.3, 3: 24.4, 4: 37.4, 5: 52.7, 6: 79.9, 7: 98.5}
 
-OUTPUT_DIR = pathlib.Path("./output")
+OUTPUT_DIR = pathlib.Path("./debug")
 
 
 def ensure_output_dir():

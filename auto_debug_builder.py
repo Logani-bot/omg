@@ -10,21 +10,29 @@ from universe_selector import get_top30_coins, get_top30_symbols
 from core.phase1_5_core import run_phase1_5_simulation
 
 
-OUTPUT_DIR = pathlib.Path("data")
+OUTPUT_DIR = pathlib.Path("debug")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None) -> list[str]:
+def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None, top_n: int = 100) -> list[str]:
     """
-    Build per-symbol debug CSVs for Top100 (or provided symbols).
+    Build per-symbol debug CSVs for Top N (or provided symbols).
     - Downloads 일봉 OHLCV from Binance.
     - Computes Phase 1.5 debug table (H 루프 보정/리셋 포함).
-    - Saves to data/{SYMBOL}_debug.csv
+    - Saves to debug/{SYMBOL}_debug.csv
     - Excludes stablecoins, wrapped tokens, and unsupported symbols.
     Returns list of produced file paths (as str).
     """
     client = BinanceClient()
-    syms = symbols or get_top30_symbols()
+    
+    if symbols:
+        syms = symbols
+        print(f"[INFO] Using provided symbols: {len(syms)}개")
+    else:
+        # Top N 코인 리스트 가져오기
+        coins = get_top30_coins()  # universe_selector에서 TOP_N=100으로 설정됨
+        syms = [coin["Symbol"] for coin in coins[:top_n]]
+        print(f"[INFO] Using Top {top_n} coins: {len(syms)}개")
     
     # Binance API 미지원 심볼 제외 (스테이블코인, 래핑 토큰, 데이터 없음)
     exclude_symbols = {
@@ -36,12 +44,27 @@ def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None) -> li
     syms = [s for s in syms if s not in exclude_symbols]
 
     produced: list[str] = []
-    for sym in syms:
-        print(f"Processing {sym}...")
+    total_syms = len(syms)
+    successful = 0
+    failed = 0
+    
+    print(f"\n{'='*60}")
+    print(f"Phase 1.5 Debug Builder - Top {top_n} 코인")
+    print(f"{'='*60}")
+    print(f"총 대상: {total_syms}개 코인")
+    print(f"데이터 기간: {limit_days}일")
+    print(f"{'='*60}\n")
+    
+    for i, sym in enumerate(syms, 1):
+        sym_name = sym.replace("USDT", "")
+        print(f"[{i:3d}/{total_syms}] {sym_name:<8} ({sym}) 처리 중...", end=" ")
+        
         try:
+            # OHLC 데이터 가져오기
             df = client.get_ohlc_daily(sym, limit=limit_days)
             if df.empty:
-                print(f"  {sym}: No data")
+                print("FAIL 데이터 없음")
+                failed += 1
                 continue
             
             # Convert DataFrame to list of dictionaries for run_phase1_5_simulation
@@ -63,8 +86,7 @@ def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None) -> li
                     'volume': float(row['volume'])
                 })
             
-            # Remove USDT suffix for filename
-            sym_name = sym.replace("USDT", "")
+            # Phase 1.5 시뮬레이션 실행
             out_path = OUTPUT_DIR / f"{sym_name}_debug.csv"
             
             run_phase1_5_simulation(
@@ -74,16 +96,40 @@ def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None) -> li
                 out_csv=out_path,
                 limit_days=limit_days
             )
+            
             produced.append(str(out_path))
-            print(f"  OK {sym} completed")
+            successful += 1
+            print(f"OK 완료 ({len(ohlc_data)}일 데이터)")
+            
         except Exception as e:
-            print(f"  SKIP {sym} - Error: {str(e)}")
+            failed += 1
+            print(f"FAIL 실패: {str(e)[:50]}...")
             continue
+    
+    # 결과 요약
+    print(f"\n{'='*60}")
+    print(f"처리 완료!")
+    print(f"OK 성공: {successful}개")
+    print(f"FAIL 실패: {failed}개")
+    print(f"저장 위치: {OUTPUT_DIR.resolve()}")
+    print(f"{'='*60}")
+    
     return produced
 
 
 if __name__ == "__main__":
-    files = build_all(limit_days=1200)
-    print("[OK] generated:")
-    for f in files:
-        print(f" - {f}")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Phase 1.5 Debug Builder - Top N 코인 일괄 처리")
+    parser.add_argument("--top-n", type=int, default=100, help="처리할 Top N 코인 수 (기본: 100)")
+    parser.add_argument("--limit-days", type=int, default=1200, help="데이터 기간 (기본: 1200일)")
+    parser.add_argument("--symbols", nargs="+", help="특정 심볼들만 처리 (예: BTCUSDT ETHUSDT)")
+    
+    args = parser.parse_args()
+    
+    if args.symbols:
+        files = build_all(limit_days=args.limit_days, symbols=args.symbols)
+    else:
+        files = build_all(limit_days=args.limit_days, top_n=args.top_n)
+    
+    print(f"\n완료! 총 {len(files)}개 파일 생성 완료!")
