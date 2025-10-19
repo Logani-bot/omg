@@ -19,7 +19,7 @@ CSV 컬럼 (기존 유지 + 보강)
   level_name,level_price,trigger_price,fill_price,
   H,L_now,rebound_from_L_pct,threshold_pct,
   forbidden_levels_above_last_sell,
-  B1,B2,B3,B4,B5,B6,B7,
+  B1,B2,B3,B4,B5,B6,B7,Stop_Loss,
   cutoff_price,next_buy_level_name,next_buy_level_price,next_buy_trigger_price
 """
 from __future__ import annotations
@@ -213,7 +213,7 @@ def run_phase1_5_simulation(
             "level_name","level_price","trigger_price","fill_price",
             "H","L_now","rebound_from_L_pct","threshold_pct",
             "forbidden_levels_above_last_sell",
-            "B1","B2","B3","B4","B5","B6","B7",
+            "B1","B2","B3","B4","B5","B6","B7","Stop_Loss",
             "cutoff_price","next_buy_level_name","next_buy_level_price","next_buy_trigger_price",
         ])
 
@@ -290,6 +290,7 @@ def run_phase1_5_simulation(
                 allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)  # 7
                 Bvals = [lv[n] if lv else None for n in level_names]
                 cutoff = last_sell_trigger_price
+                stop_loss_price = H * 0.19 if H is not None else None
                 _emit_event([
                     date, round(o,8), round(h,8), round(l,8), round(c,8),
                     mode, position, stage, "RESTART_+98.5pct", "HIGH",
@@ -298,6 +299,7 @@ def run_phase1_5_simulation(
                     None, None,
                     allowed_cnt,
                     *(round(x,10) if x is not None else None for x in Bvals),
+                    (round(stop_loss_price,10) if stop_loss_price is not None else None),
                     (round(cutoff,10) if cutoff is not None else None),
                     "", None, None,
                 ])
@@ -329,6 +331,7 @@ def run_phase1_5_simulation(
                     allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
                     Bvals = [lv[n] if lv else None for n in level_names]
                     cutoff = last_sell_trigger_price
+                    stop_loss_price = H * 0.19 if H is not None else None
                     _emit_event([
                         date, round(o,8), round(h,8), round(l,8), round(c,8),
                         mode, position, stage, f"BUY {nm}", "LOW",
@@ -337,6 +340,7 @@ def run_phase1_5_simulation(
                         None, None,
                         allowed_cnt,
                         *(round(x,10) if x is not None else None for x in Bvals),
+                        (round(stop_loss_price,10) if stop_loss_price is not None else None),
                         (round(cutoff,10) if cutoff is not None else None),
                         nm, round(p,10), round(l,10),
                     ])
@@ -360,6 +364,7 @@ def run_phase1_5_simulation(
                     allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
                     Bvals = [lv[n] if lv else None for n in level_names]
                     cutoff = last_sell_trigger_price
+                    stop_loss_price = H * 0.19 if H is not None else None
                     _emit_event([
                         date, round(o,8), round(h,8), round(l,8), round(c,8),
                         mode, position, stage, f"ADD {nm}", "LOW",
@@ -368,6 +373,7 @@ def run_phase1_5_simulation(
                         None, None,
                         allowed_cnt,
                         *(round(x,10) if x is not None else None for x in Bvals),
+                        (round(stop_loss_price,10) if stop_loss_price is not None else None),
                         (round(cutoff,10) if cutoff is not None else None),
                         nm, round(p,10), round(l,10),
                     ])
@@ -399,6 +405,7 @@ def run_phase1_5_simulation(
                         allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
                         Bvals = [lv[n] if lv else None for n in level_names]
                         cutoff = last_sell_trigger_price
+                        stop_loss_price = H * 0.19 if H is not None else None
                         _emit_event([
                             date, round(o,8), round(h,8), round(l,8), round(c,8),
                             mode, position, stage, f"SELL S{stage if stage else ''}".strip(), "HIGH",
@@ -407,6 +414,7 @@ def run_phase1_5_simulation(
                             None, threshold_pct,
                             allowed_cnt,
                             *(round(x,10) if x is not None else None for x in Bvals),
+                            (round(stop_loss_price,10) if stop_loss_price is not None else None),
                             (round(cutoff,10) if cutoff is not None else None),
                             "", None, None,
                         ])
@@ -434,6 +442,7 @@ def run_phase1_5_simulation(
                         None, None,
                         allowed_cnt,
                         *(round(x,10) if x is not None else None for x in Bvals),
+                        (round(stop_loss_price,10) if stop_loss_price is not None else None),
                         (round(cutoff,10) if cutoff is not None else None),
                         "", None, None,
                     ])
@@ -466,6 +475,7 @@ def run_phase1_5_simulation(
             allowed_cnt = _allowed_levels_for_display(level_pairs, forbidden_level_prices, last_sell_trigger_price)
             Bvals = [lv[n] if lv else None for n in level_names]
             cutoff = last_sell_trigger_price
+            stop_loss_price = H * 0.19 if H is not None else None
 
             w.writerow([
                 date, round(o,8), round(h,8), round(l,8), round(c,8),
@@ -482,6 +492,7 @@ def run_phase1_5_simulation(
                 threshold_pct,
                 allowed_cnt,
                 *(round(x,10) if x is not None else None for x in Bvals),
+                (round(stop_loss_price,10) if stop_loss_price is not None else None),
                 (round(cutoff,10) if cutoff is not None else None),
                 next_nm,
                 (round(next_px,10) if next_px is not None else None),
