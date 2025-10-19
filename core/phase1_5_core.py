@@ -40,7 +40,7 @@ URL_KLINES = f"{BINANCE_BASE}/api/v3/klines"
 # SELL thresholds (% rebound from L)
 SELL_THRESHOLDS = {1: 7.7, 2: 17.3, 3: 24.4, 4: 37.4, 5: 52.7, 6: 79.9, 7: 98.5}
 
-OUTPUT_DIR = pathlib.Path("./debug")
+OUTPUT_DIR = pathlib.Path("./output")
 
 
 def ensure_output_dir():
@@ -155,18 +155,20 @@ _level_order = {f"B{i}": i - 1 for i in range(1, 8)}  # B1=0 … B7=6
 
 
 def _type_order(event: str) -> int:
-    # BUY → ADD → SELL
+    # BUY → ADD → SELL → STOP LOSS
     if not event:
-        return 3
+        return 4
     if event.startswith("BUY"):
         return 0
     if event.startswith("ADD"):
         return 1
     if event.startswith("SELL"):
         return 2
+    if event.startswith("STOP LOSS"):
+        return 3
     if event.startswith("RESTART"):
         return 9  # 이벤트 행은 맨 끝으로 두더라도 스냅샷 전
-    return 3
+    return 4
 
 
 # ===== Core simulation =====
@@ -409,7 +411,34 @@ def run_phase1_5_simulation(
                             "", None, None,
                         ])
 
-            # flush events in BUY → ADD → SELL order
+            # ========= STOP LOSS (only if holding) =========
+            if position and stage is not None and H is not None and l is not None:
+                stop_loss_price = H * 0.19  # 81% 하락 (H * 0.19)
+                if l <= stop_loss_price:
+                    position = False
+                    stage = None
+                    last_fill_date.clear()
+                    filled_levels_current.clear()
+                    deepest_filled_idx = 0
+                    # STOP LOSS 후에는 추가 매수 금지 (사이클 초기화 전까지)
+                    last_sell_trigger_price = float('inf')  # 모든 매수선 차단
+                    forbidden_level_prices = {p for (_nm, p) in level_pairs}
+                    allowed_cnt = 0  # forbidden_levels_above_last_sell = 0
+                    Bvals = [lv[n] if lv else None for n in level_names]
+                    cutoff = last_sell_trigger_price
+                    _emit_event([
+                        date, round(o,8), round(h,8), round(l,8), round(c,8),
+                        mode, position, stage, "STOP LOSS", "LOW",
+                        "", None, round(stop_loss_price,8), round(stop_loss_price,8),
+                        (round(H,8) if H is not None else None), (round(L,8) if L is not None else None),
+                        None, None,
+                        allowed_cnt,
+                        *(round(x,10) if x is not None else None for x in Bvals),
+                        (round(cutoff,10) if cutoff is not None else None),
+                        "", None, None,
+                    ])
+
+            # flush events in BUY → ADD → SELL → STOP LOSS order
             if day_events:
                 day_events.sort(key=lambda r: (_type_order(str(r[8])), _level_order.get(str(r[10]), 99)))
                 for evr in day_events:

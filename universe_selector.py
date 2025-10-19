@@ -31,7 +31,7 @@ VS_CURRENCY = "usd"
 TOP_N = 100
 URL_TOP = "https://api.coingecko.com/api/v3/coins/markets"
 
-EXCLUDE_SYMBOLS = {"WBTC", "WETH", "WBETH", "STETH", "WSTETH", "WEETH"}
+EXCLUDE_SYMBOLS = {"WBTC", "WETH", "WBETH", "STETH", "WSTETH", "WEETH", "USD1", "BFUSD", "BNSOL", "BNB", "ENA"}
 EXCLUDE_NAME_KEYWORDS = {"WRAPPED", "BRIDGE"}
 
 

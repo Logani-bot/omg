@@ -127,7 +127,7 @@ class CoinAnalysisExcel:
                 if latest_event.startswith('BUY') or latest_event.startswith('ADD'):
                     # BUY/ADD 이벤트: 한 차수 아래가 다음 목표
                     stage = latest_event_row['stage']
-                    if pd.notna(stage) and str(stage).isdigit():
+                    if pd.notna(stage) and str(stage).replace('.0', '').isdigit():
                         stage_num = int(stage)
                         if stage_num < 7:
                             next_buy_target = f"B{stage_num + 1}"
@@ -178,6 +178,12 @@ class CoinAnalysisExcel:
                     next_buy_target = "B1"
                     next_buy_price = buy_levels['B1']
                     status = "restart_b1_target"
+                
+                elif latest_event == 'STOP LOSS':
+                    # STOP LOSS 이벤트: 손절 상태, 추가 매수 금지
+                    next_buy_target = "STOP LOSS"
+                    next_buy_price = h_value * 0.19  # 81% 하락값
+                    status = "stop_loss"
                 
                 else:
                     # 기타 이벤트: B1이 목표
@@ -255,7 +261,7 @@ class CoinAnalysisExcel:
                 print(f"  {symbol}: {buy_progress['status']}")
                 analysis_data.append({
                     **coin,
-                    "시가총액": self.format_market_cap(coin["시가총액"]),
+                    "시가총액($)": self.format_market_cap(coin["시가총액"]),
                     "현재가": self.format_price(coin["현재가"]),
                     "H값": "",
                     "B1": "", "B2": "", "B3": "", "B4": "", 
@@ -281,7 +287,7 @@ class CoinAnalysisExcel:
             
             analysis_data.append({
                 **coin,
-                "시가총액": self.format_market_cap(coin["시가총액"]),
+                "시가총액($)": self.format_market_cap(coin["시가총액"]),
                 "현재가": self.format_price(coin["현재가"], h_value),
                 "H값": self.format_price(h_value, h_value),
                 **formatted_buy_levels,
@@ -299,7 +305,7 @@ class CoinAnalysisExcel:
         
         # 컬럼 순서 정리
         columns = [
-            "순위", "코인명", "심볼", "시가총액", "현재가", "24h변동률",
+            "순위", "코인명", "심볼", "시가총액($)", "현재가", "24h변동률",
             "H값", "B1", "B2", "B3", "B4", "B5", "B6", "B7",
             "다음매수목표", "목표가격", "이격도(%)", "상태"
         ]

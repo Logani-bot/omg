@@ -78,7 +78,8 @@ def build_all(limit_days: int = 1200, symbols: Optional[list[str]] = None, top_n
         "USDTUSDT", "USDCUSDT", "USDEUSDT", "USDSUSDT", "DAIUSDT",  # 스테이블코인
         "WBTCUSDT", "WBETHUSDT", "WEETHUSDT", "STETHUSDT", "WSTETHUSDT",  # 래핑 토큰
         "FIGR_HELOCUSDT", "HYPEUSDT", "LEOUSDT", "USDT0USDT", "SUSDEUSDT",  # API 에러
-        "MUSDT", "OKBUSDT", "WLFIUSDT", "BGBUSDT", "MNTUSDT", "CROUSDT"  # 데이터 없음
+        "MUSDT", "OKBUSDT", "WLFIUSDT", "BGBUSDT", "MNTUSDT", "CROUSDT",  # 데이터 없음
+        "USD1USDT", "BFUSDUSDT", "BNSOLUSDT", "BNBUSDT", "ENAUSDT"  # 추가 제외 코인
     }
     syms = [s for s in syms if s not in exclude_symbols]
 
