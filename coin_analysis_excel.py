@@ -100,7 +100,7 @@ class CoinAnalysisExcel:
             if not h_value:
                 return {"status": "no_h_value", "next_buy_target": None, "current_price": current_price, "h_value": None}
             
-            # DEBUG 파일에서 B1~B7 값 직접 가져오기
+            # DEBUG 파일에서 B1~B7 값과 Stop_Loss 값 직접 가져오기
             buy_levels = {
                 'B1': latest_row['B1'] if pd.notna(latest_row['B1']) else None,
                 'B2': latest_row['B2'] if pd.notna(latest_row['B2']) else None,
@@ -109,6 +109,7 @@ class CoinAnalysisExcel:
                 'B5': latest_row['B5'] if pd.notna(latest_row['B5']) else None,
                 'B6': latest_row['B6'] if pd.notna(latest_row['B6']) else None,
                 'B7': latest_row['B7'] if pd.notna(latest_row['B7']) else None,
+                'Stop_Loss': latest_row['Stop_Loss'] if pd.notna(latest_row['Stop_Loss']) else None,
             }
             
             # EVENT가 있는 행들만 필터링
@@ -134,10 +135,10 @@ class CoinAnalysisExcel:
                             next_buy_price = buy_levels[next_buy_target]
                             status = f"buy_add_next_target_{next_buy_target}"
                         else:
-                            # B7까지 완료된 경우
-                            next_buy_target = "B7"
-                            next_buy_price = buy_levels['B7']
-                            status = "buy_add_max_level"
+                            # B7까지 완료된 경우 - STOP LOSS 대기 상태 (실행 전)
+                            next_buy_target = "STOP LOSS (실행 전)"
+                            next_buy_price = buy_levels['Stop_Loss'] if buy_levels['Stop_Loss'] is not None else h_value * 0.19
+                            status = "buy_add_max"
                     else:
                         # stage 정보가 없으면 B2가 목표
                         next_buy_target = "B2"
@@ -180,10 +181,10 @@ class CoinAnalysisExcel:
                     status = "restart_b1_target"
                 
                 elif latest_event == 'STOP LOSS':
-                    # STOP LOSS 이벤트: 손절 상태, 추가 매수 금지
-                    next_buy_target = "STOP LOSS"
-                    next_buy_price = h_value * 0.19  # 81% 하락값
-                    status = "stop_loss"
+                    # STOP LOSS 이벤트: 손절 상태, 추가 매수 금지 (실행됨)
+                    next_buy_target = "STOP LOSS (실행됨)"
+                    next_buy_price = buy_levels['Stop_Loss'] if buy_levels['Stop_Loss'] is not None else h_value * 0.19
+                    status = "level_stop_loss"
                 
                 else:
                     # 기타 이벤트: B1이 목표
@@ -265,7 +266,7 @@ class CoinAnalysisExcel:
                     "현재가": self.format_price(coin["현재가"]),
                     "H값": "",
                     "B1": "", "B2": "", "B3": "", "B4": "", 
-                    "B5": "", "B6": "", "B7": "",
+                    "B5": "", "B6": "", "B7": "", "Stop_Loss": "",
                     "다음매수목표": "",
                     "목표가격": "",
                     "이격도(%)": None,
@@ -280,7 +281,7 @@ class CoinAnalysisExcel:
             distance_pct = buy_progress["distance_pct"]
             buy_levels = buy_progress["buy_levels"]
             
-            # DEBUG 파일에서 가져온 B1~B7 값 포맷팅
+            # DEBUG 파일에서 가져온 B1~B7, Stop_Loss 값 포맷팅
             formatted_buy_levels = {k: self.format_price(v, h_value) if v is not None else "" for k, v in buy_levels.items()}
             
             print(f"  {symbol}: H={h_value:.2f}, 현재가={current_price:.2f}, 다음목표={next_target}, 이격도={distance_pct:.1f}%")
@@ -306,7 +307,7 @@ class CoinAnalysisExcel:
         # 컬럼 순서 정리
         columns = [
             "순위", "코인명", "심볼", "시가총액($)", "현재가", "24h변동률",
-            "H값", "B1", "B2", "B3", "B4", "B5", "B6", "B7",
+            "H값", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "Stop_Loss",
             "다음매수목표", "목표가격", "이격도(%)", "상태"
         ]
         
@@ -332,9 +333,9 @@ class CoinAnalysisExcel:
                 if cell.value != "" and cell.value is not None:
                     cell.number_format = '0.00"%"'  # 백분율 기호만 추가
             
-            # 거리(%) 컬럼 (Q열)에 백분율 형식 적용
+            # 이격도(%) 컬럼 (R열)에 백분율 형식 적용
             for row in range(2, len(df) + 2):  # 헤더 제외하고 데이터 행만
-                cell = worksheet[f'Q{row}']
+                cell = worksheet[f'R{row}']
                 if cell.value is not None:
                     cell.number_format = '0.00"%"'  # 백분율 기호만 추가
             
@@ -354,9 +355,10 @@ class CoinAnalysisExcel:
                 'L': 10,  # B5
                 'M': 10,  # B6
                 'N': 10,  # B7
-                'O': 15,  # 가장가까운매수선
-                'P': 12,  # 매수선가격
-                'Q': 10   # 거리(%)
+                'O': 12,  # Stop_Loss
+                'P': 15,  # 다음매수목표
+                'Q': 12,  # 목표가격
+                'R': 10   # 이격도(%)
             }
             
             for col, width in column_widths.items():
