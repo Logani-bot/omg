@@ -454,7 +454,9 @@ class CryptoRealtimeMonitor:
             return
         
         print(f"[{datetime.now()}] 모니터링 사이클 시작...")
+        print(f"체크할 코인 수: {len(self.monitoring_data)}개")
         
+        alert_count = 0
         for coin_data in self.monitoring_data:
             try:
                 symbol = coin_data['symbol']
@@ -467,7 +469,11 @@ class CryptoRealtimeMonitor:
                 alerts = self.check_alert_condition(coin_data, current_price)
                 
                 # 알람 전송
+                if alerts:
+                    alert_count += len(alerts)
+                    print(f"  [{symbol}] 알람 발견: {len(alerts)}개")
                 for alert in alerts:
+                    print(f"    - {alert['target']}: 이격도 {alert['divergence']:.2f}%")
                     self.send_alert(alert)
                 
                 # 매수 실행 감지 (30분봉 저가 기준)
@@ -492,7 +498,28 @@ class CryptoRealtimeMonitor:
             except Exception as e:
                 print(f"{symbol} 모니터링 오류: {e}")
         
-        print(f"[{datetime.now()}] 모니터링 사이클 완료")
+        print(f"[{datetime.now()}] 모니터링 사이클 완료 - 알람 전송: {alert_count}개")
+    
+    def load_existing_analysis(self) -> bool:
+        """기존 ANALYSIS 파일 로드 (DEBUG 파일 재생성 없이)"""
+        try:
+            output_dir = self.omg_dir / "output"
+            analysis_files = list(output_dir.glob("coin_analysis_*.xlsx"))
+            if not analysis_files:
+                print("기존 ANALYSIS 파일이 없습니다. 일일 업데이트를 기다립니다.")
+                return False
+            
+            # 가장 최신 파일 선택
+            self.analysis_file = max(analysis_files, key=os.path.getctime)
+            print(f"기존 ANALYSIS 파일 로드: {self.analysis_file.name}")
+            
+            # ANALYSIS 파일에서 모니터링 데이터 로드
+            self.load_monitoring_data()
+            return True
+            
+        except Exception as e:
+            print(f"기존 ANALYSIS 파일 로드 실패: {e}")
+            return False
     
     def start_monitoring(self):
         """모니터링 시작"""
@@ -502,13 +529,13 @@ class CryptoRealtimeMonitor:
         schedule.every().day.at("00:00").do(self.run_daily_update)
         schedule.every(5).minutes.do(self.run_monitoring_cycle)  # 5분 간격으로 변경
         
-        # 초기 실행 (테스트용)
-        print("초기 데이터 로드...")
-        if self.run_daily_update():
-            print("초기 데이터 로드 완료")
+        # 기존 ANALYSIS 파일이 있으면 로드, 없으면 일일 업데이트를 기다림
+        print("기존 데이터 확인 중...")
+        if self.load_existing_analysis():
+            print("기존 데이터 로드 완료 - 모니터링 시작")
         else:
-            print("초기 데이터 로드 실패")
-            return
+            print("기존 데이터 없음 - 00:00 일일 업데이트를 기다립니다.")
+            print("(수동으로 업데이트하려면 run_daily_analysis.bat 실행)")
         
         # 메인 루프
         try:
