@@ -22,13 +22,22 @@ from typing import Dict, List, Optional, Tuple
 import subprocess
 import pathlib
 
-# S12 디렉토리의 모듈 import
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from telegram_notifier import send_telegram_message
+# 현재 디렉토리를 Python 경로에 추가
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+try:
+    from telegram_notifier import send_telegram_message
+except ImportError:
+    print(f"Error: Could not import telegram_notifier from {current_dir}")
+    print(f"Files in current directory: {os.listdir(current_dir)}")
+    raise
 
 class CryptoRealtimeMonitor:
     def __init__(self):
-        self.omg_dir = pathlib.Path("C:/Coding/OMG")
+        # 현재 스크립트가 있는 디렉토리를 OMG 디렉토리로 설정
+        self.omg_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
         self.analysis_file = None
         self.monitoring_data = {}  # {symbol: {next_target, buy_levels, rank, name}}
         self.alert_history = {}  # {symbol: {target: sent_date}}
@@ -115,8 +124,8 @@ class CryptoRealtimeMonitor:
             print(f"일일 업데이트 실패: {e}")
             return False
         finally:
-            # S12 디렉토리로 복귀
-            os.chdir("C:/Coding/S12")
+            # 원래 디렉토리로 복귀 (스크립트가 있는 디렉토리)
+            os.chdir(self.omg_dir)
     
     def load_monitoring_data(self):
         """ANALYSIS 파일에서 모니터링 데이터 로드"""
@@ -209,6 +218,26 @@ class CryptoRealtimeMonitor:
             
         except Exception as e:
             print(f"{symbol} 30분봉 저가 조회 실패: {e}")
+            return None
+    
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """현재가 조회 (Binance Ticker API)"""
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {
+                "symbol": f"{symbol}USDT"
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data and "price" in data:
+                return float(data["price"])
+            return None
+            
+        except Exception as e:
+            print(f"{symbol} 현재가 조회 실패: {e}")
             return None
     
     def calculate_divergence(self, current_price: float, target_price: float) -> float:
@@ -419,7 +448,7 @@ class CryptoRealtimeMonitor:
             print(f"매수 실행 알림 전송 실패: {e}")
     
     def run_monitoring_cycle(self):
-        """30분 간격 모니터링 사이클"""
+        """5분 간격 모니터링 사이클"""
         if not self.monitoring_data:
             print("모니터링 데이터가 없습니다.")
             return
@@ -471,7 +500,7 @@ class CryptoRealtimeMonitor:
         
         # 스케줄 설정
         schedule.every().day.at("00:00").do(self.run_daily_update)
-        schedule.every(30).minutes.do(self.run_monitoring_cycle)
+        schedule.every(5).minutes.do(self.run_monitoring_cycle)  # 5분 간격으로 변경
         
         # 초기 실행 (테스트용)
         print("초기 데이터 로드...")
