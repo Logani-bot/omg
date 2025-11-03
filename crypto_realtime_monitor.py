@@ -198,8 +198,8 @@ class CryptoRealtimeMonitor:
         except Exception as e:
             print(f"모니터링 데이터 로드 실패: {e}")
     
-    def get_candle_low(self, symbol: str, interval: str = "30m") -> Optional[float]:
-        """30분봉 저가 조회 (Binance Kline API)"""
+    def get_candle_low(self, symbol: str, interval: str = "5m") -> Optional[float]:
+        """5분봉 저가 조회 (Binance Kline API) - 모니터링 간격에 맞춤"""
         try:
             url = "https://api.binance.com/api/v3/klines"
             params = {
@@ -217,7 +217,7 @@ class CryptoRealtimeMonitor:
             return None
             
         except Exception as e:
-            print(f"{symbol} 30분봉 저가 조회 실패: {e}")
+            print(f"{symbol} {interval}봉 저가 조회 실패: {e}")
             return None
     
     def get_current_price(self, symbol: str) -> Optional[float]:
@@ -247,7 +247,7 @@ class CryptoRealtimeMonitor:
         return abs((current_price - target_price) / target_price) * 100
     
     def check_buy_execution(self, coin_data: Dict) -> Optional[Dict]:
-        """30분봉 저가로 매수 실행 감지"""
+        """5분봉 저가로 매수 실행 감지 (모니터링 간격에 맞춤)"""
         symbol = coin_data['symbol']
         next_target = coin_data['next_target']
         buy_levels = coin_data['buy_levels']
@@ -260,8 +260,8 @@ class CryptoRealtimeMonitor:
         if not target_price:
             return None
         
-        # 30분봉 저가 조회
-        candle_low = self.get_candle_low(symbol)
+        # 5분봉 저가 조회
+        candle_low = self.get_candle_low(symbol, interval="5m")
         if not candle_low:
             return None
         
@@ -274,18 +274,26 @@ class CryptoRealtimeMonitor:
                 'candle_low': candle_low,
                 'rank': coin_data['rank'],
                 'name': coin_data['name'],
-                'h_value': coin_data['h_value']
+                'h_value': coin_data['h_value'],
+                'buy_levels': buy_levels  # calculate_average_buy_and_sell_price에서 필요
             }
         
         return None
     
     def calculate_average_buy_and_sell_price(self, coin_data: Dict) -> Dict:
         """평균 매수선과 매도가 계산"""
-        next_target = coin_data['next_target']  # 예: "B3"
+        # execution_data에는 'target' 키가 있고, coin_data에는 'next_target' 키가 있음
+        if 'next_target' in coin_data:
+            target = coin_data['next_target']
+        elif 'target' in coin_data:
+            target = coin_data['target']
+        else:
+            raise KeyError("coin_data must have either 'next_target' or 'target' key")
+        
         buy_levels = coin_data['buy_levels']
         
         # 매수 단계 추출 (B3 → 3)
-        stage_num = int(next_target[1])
+        stage_num = int(target[1])
         
         # 1단계부터 현재 단계까지의 매수가들
         buy_prices = []
@@ -413,7 +421,7 @@ class CryptoRealtimeMonitor:
                 f"코인명: {execution_data['name']} ({execution_data['symbol']})\n"
                 f"시총 순위: {execution_data['rank']}\n\n"
                 f"매수 목표: {execution_data['target']} — ${execution_data['target_price']:,.2f}\n"
-                f"30분봉 저가: ${execution_data['candle_low']:,.2f}\n\n"
+                f"5분봉 저가: ${execution_data['candle_low']:,.2f}\n\n"
                 f"현재가: ${current_price:,.2f}\n"
                 f"평균매수가: ${price_data['avg_buy_price']:,.2f}\n"
                 f"예상 매도가: ${price_data['sell_price']:,.2f} (+{price_data['sell_threshold']:.1f}%)\n"
