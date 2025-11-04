@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import subprocess
 import pathlib
+import psutil
 
 # 현재 디렉토리를 Python 경로에 추가
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,13 @@ except ImportError:
     print(f"Error: Could not import telegram_notifier from {current_dir}")
     print(f"Files in current directory: {os.listdir(current_dir)}")
     raise
+
+try:
+    from slack_notifier import send_slack_alert, send_slack_buy_execution_alert
+except ImportError:
+    print(f"Warning: Could not import slack_notifier. Slack 알림을 건너뜁니다.")
+    send_slack_alert = None
+    send_slack_buy_execution_alert = None
 
 class CryptoRealtimeMonitor:
     def __init__(self):
@@ -385,9 +393,14 @@ class CryptoRealtimeMonitor:
             )
             
             # 텔레그램 전송 (모든 수신자에게)
-            success = send_telegram_message(message, recipients=["all"])
+            telegram_success = send_telegram_message(message, recipients=["all"])
             
-            if success:
+            # Slack 전송 (선택적)
+            slack_success = True
+            if send_slack_alert:
+                slack_success = send_slack_alert(alert)
+            
+            if telegram_success or slack_success:
                 # 알람 이력 업데이트
                 today = datetime.now().strftime("%Y-%m-%d")
                 if alert['symbol'] not in self.alert_history:
@@ -397,7 +410,12 @@ class CryptoRealtimeMonitor:
                 self.alert_history[alert['symbol']][alert['target']] = today
                 self.save_alert_history()
                 
-                print(f"알람 전송 성공: {alert['symbol']} {alert['target']}")
+                status = []
+                if telegram_success:
+                    status.append("텔레그램")
+                if slack_success:
+                    status.append("Slack")
+                print(f"알람 전송 성공: {alert['symbol']} {alert['target']} ({', '.join(status)})")
             else:
                 print(f"알람 전송 실패: {alert['symbol']} {alert['target']}")
                 
@@ -430,26 +448,28 @@ class CryptoRealtimeMonitor:
             )
             
             # 텔레그램 전송 (모든 수신자에게)
-            success = send_telegram_message(message, recipients=["all"])
+            telegram_success = send_telegram_message(message, recipients=["all"])
             
-            if success:
-                # 매수 실행 이력 업데이트
-                today = datetime.now().strftime("%Y-%m-%d")
+            # Slack 전송 (선택적)
+            slack_success = True
+            if send_slack_buy_execution_alert:
+                slack_success = send_slack_buy_execution_alert(execution_data, price_data, current_price)
+            
+            if telegram_success or slack_success:
+                # 매수 실행 이력은 이미 전송 전에 저장했으므로 업데이트만 확인
+                # (중복 방지를 위해 전송 전에 저장하도록 변경됨)
+                
+                status = []
+                if telegram_success:
+                    status.append("텔레그램")
+                if slack_success:
+                    status.append("Slack")
                 symbol = execution_data['symbol']
                 target = execution_data['target']
-                
-                if symbol not in self.alert_history:
-                    self.alert_history[symbol] = {}
-                if not isinstance(self.alert_history[symbol], dict):
-                    self.alert_history[symbol] = {}
-                
-                # 매수 실행 이력 키 (접근 알림과 구분)
-                execution_key = f"{target}_EXECUTED"
-                self.alert_history[symbol][execution_key] = today
-                self.save_alert_history()
-                
-                print(f"매수 실행 알림 전송 완료: {symbol} {target}")
+                print(f"매수 실행 알림 전송 완료: {symbol} {target} ({', '.join(status)})")
             else:
+                symbol = execution_data.get('symbol', 'UNKNOWN')
+                target = execution_data.get('target', 'UNKNOWN')
                 print(f"매수 실행 알림 전송 실패: {symbol} {target}")
                 
         except Exception as e:
@@ -484,21 +504,33 @@ class CryptoRealtimeMonitor:
                     print(f"    - {alert['target']}: 이격도 {alert['divergence']:.2f}%")
                     self.send_alert(alert)
                 
-                # 매수 실행 감지 (30분봉 저가 기준)
+                # 매수 실행 감지 (5분봉 저가 기준)
                 execution_data = self.check_buy_execution(coin_data)
                 if execution_data:
-                    # 중복 실행 알림 방지
+                    # 중복 실행 알림 방지 (전송 전에 체크)
                     today = datetime.now().strftime("%Y-%m-%d")
                     symbol = execution_data['symbol']
                     target = execution_data['target']
                     execution_key = f"{target}_EXECUTED"
                     
-                    if (symbol not in self.alert_history or 
-                        not isinstance(self.alert_history[symbol], dict) or
-                        execution_key not in self.alert_history[symbol] or
-                        self.alert_history[symbol][execution_key] != today):
-                        
-                        self.send_buy_execution_alert(execution_data)
+                    # 중복 체크: 이미 오늘 전송했으면 스킵
+                    if (symbol in self.alert_history and 
+                        isinstance(self.alert_history[symbol], dict) and
+                        execution_key in self.alert_history[symbol] and
+                        self.alert_history[symbol][execution_key] == today):
+                        # 이미 오늘 전송했으므로 스킵
+                        continue
+                    
+                    # 전송 전에 이력에 즉시 표시 (중복 방지)
+                    if symbol not in self.alert_history:
+                        self.alert_history[symbol] = {}
+                    if not isinstance(self.alert_history[symbol], dict):
+                        self.alert_history[symbol] = {}
+                    self.alert_history[symbol][execution_key] = today
+                    self.save_alert_history()
+                    
+                    # 알람 전송
+                    self.send_buy_execution_alert(execution_data)
                 
                 # API 제한 방지
                 time.sleep(0.1)
@@ -555,7 +587,110 @@ class CryptoRealtimeMonitor:
         except Exception as e:
             print(f"모니터링 오류: {e}")
 
+def check_existing_process():
+    """기존 실행 중인 프로세스 확인 및 종료"""
+    current_pid = os.getpid()
+    script_name = os.path.basename(__file__)
+    
+    # psutil을 사용하여 crypto_realtime_monitor.py를 실행 중인 프로세스 찾기
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['name'] and 'python' in proc.info['name'].lower():
+                    cmdline = proc.info.get('cmdline', [])
+                    if cmdline and any('crypto_realtime_monitor' in str(arg) for arg in cmdline):
+                        proc_pid = proc.info['pid']
+                        if proc_pid != current_pid:
+                            print(f"기존 프로세스 발견 (PID: {proc_pid}), 종료합니다...")
+                            try:
+                                proc_obj = psutil.Process(proc_pid)
+                                proc_obj.terminate()
+                                proc_obj.wait(timeout=5)
+                                print(f"기존 프로세스 종료 완료 (PID: {proc_pid})")
+                            except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
+                                try:
+                                    proc_obj = psutil.Process(proc_pid)
+                                    proc_obj.kill()
+                                    print(f"기존 프로세스 강제 종료 (PID: {proc_pid})")
+                                except:
+                                    pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        print(f"프로세스 체크 중 오류: {e}")
+
+def ensure_single_instance():
+    """단일 인스턴스 보장 (Lock 파일 사용)"""
+    lock_file = pathlib.Path(__file__).parent / "crypto_monitor.lock"
+    
+    # Lock 파일이 존재하면 기존 프로세스 확인
+    if lock_file.exists():
+        try:
+            with open(lock_file, 'r') as f:
+                old_pid = int(f.read().strip())
+            
+            # 해당 PID가 여전히 실행 중인지 확인
+            if psutil.pid_exists(old_pid):
+                try:
+                    proc = psutil.Process(old_pid)
+                    cmdline = proc.cmdline()
+                    if 'crypto_realtime_monitor' in ' '.join(cmdline):
+                        print(f"기존 프로세스가 실행 중입니다 (PID: {old_pid})")
+                        print("프로세스를 종료합니다...")
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                        print("기존 프로세스 종료 완료")
+                except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
+                    pass
+        except (ValueError, FileNotFoundError):
+            pass
+    
+    # 현재 PID로 Lock 파일 생성
+    try:
+        with open(lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+        print(f"Lock 파일 생성: {lock_file}")
+    except Exception as e:
+        print(f"Lock 파일 생성 실패: {e}")
+
 def main():
+    # 시작 전 중복 프로세스 확인 및 종료
+    print("=" * 60)
+    print("OMG 실시간 모니터링 시작 (중복 방지 모드)")
+    print("=" * 60)
+    
+    # 기존 프로세스 체크 및 종료
+    check_existing_process()
+    time.sleep(1)
+    
+    # 단일 인스턴스 보장
+    ensure_single_instance()
+    time.sleep(1)
+    
+    # 최종 확인: 현재 실행 중인 프로세스 수
+    try:
+        running_count = 0
+        current_pid = os.getpid()
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline', [])
+                if cmdline and any('crypto_realtime_monitor' in str(arg) for arg in cmdline):
+                    if proc.info['pid'] != current_pid:
+                        running_count += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        if running_count > 0:
+            print(f"⚠️ 경고: {running_count}개의 추가 프로세스가 실행 중입니다")
+        else:
+            print("✅ 단일 인스턴스 확인 완료")
+    except Exception as e:
+        print(f"프로세스 확인 오류: {e}")
+    
+    print("=" * 60)
+    print()
+    
+    # 모니터링 시작
     monitor = CryptoRealtimeMonitor()
     monitor.start_monitoring()
 
