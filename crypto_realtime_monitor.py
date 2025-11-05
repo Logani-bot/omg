@@ -71,7 +71,78 @@ class CryptoRealtimeMonitor:
                 json.dump(self.alert_history, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"알람 이력 저장 실패: {e}")
-    
+
+    def is_first_entry_for_level(self, symbol: str, target_level: str) -> bool:
+        """
+        RESTART 이후 이 레벨에 대한 첫 번째 알림인지 확인
+
+        조건:
+        1. 마지막 RESTART 이후 SELL 이벤트가 없어야 함
+        2. 이 레벨(target_level)에 대한 첫 알림이어야 함
+
+        Args:
+            symbol: 코인 심볼 (예: "BTC")
+            target_level: 현재 근접한 레벨 (예: "B1", "B2", "B7")
+
+        Returns:
+            bool: 이 레벨의 "첫 자리" 알림이면 True
+        """
+        try:
+            debug_file = f"debug/{symbol.lower()}_debug.csv"
+            if not os.path.exists(debug_file):
+                return False
+
+            df = pd.read_csv(debug_file)
+
+            # 1. 마지막 RESTART 찾기
+            restart_events = df[df['event'].str.contains('RESTART', na=False)]
+            if len(restart_events) == 0:
+                return False
+
+            last_restart_idx = restart_events.index[-1]
+            last_restart_date = restart_events.iloc[-1]['date']
+
+            # 2. RESTART 이후 데이터
+            after_restart = df.loc[last_restart_idx + 1:]
+
+            # 3. SELL 이벤트 있는지 확인 → 있으면 무조건 False
+            sell_events = after_restart[after_restart['event'].str.contains('SELL', na=False)]
+            if len(sell_events) > 0:
+                return False
+
+            # 4. alert_history 초기화/업데이트
+            if symbol not in self.alert_history:
+                self.alert_history[symbol] = {}
+
+            if not isinstance(self.alert_history[symbol], dict):
+                self.alert_history[symbol] = {}
+
+            # "first_alerts" 서브키가 없으면 생성
+            if "first_alerts" not in self.alert_history[symbol]:
+                self.alert_history[symbol]["first_alerts"] = {}
+
+            # 5. RESTART 날짜 확인 및 초기화
+            if "last_restart_date" not in self.alert_history[symbol]:
+                self.alert_history[symbol]["last_restart_date"] = last_restart_date
+
+            # RESTART가 새로 발생했으면 first_alerts 초기화
+            if self.alert_history[symbol]["last_restart_date"] != last_restart_date:
+                self.alert_history[symbol]["last_restart_date"] = last_restart_date
+                self.alert_history[symbol]["first_alerts"] = {}
+
+            # 6. 이 레벨의 첫 알림인지 확인
+            if target_level not in self.alert_history[symbol]["first_alerts"]:
+                # 첫 자리! - 플래그 저장
+                self.alert_history[symbol]["first_alerts"][target_level] = True
+                self.save_alert_history()
+                return True
+
+            return False
+
+        except Exception as e:
+            print(f"첫 자리 확인 실패 ({symbol} {target_level}): {e}")
+            return False
+
     def run_daily_update(self):
         """00:00에 실행되는 일일 업데이트"""
         print(f"[{datetime.now()}] 일일 업데이트 시작...")
@@ -400,11 +471,19 @@ class CryptoRealtimeMonitor:
     def send_alert(self, alert: Dict):
         """텔레그램 알람 전송"""
         try:
+            # "첫 자리" 확인
+            is_first = self.is_first_entry_for_level(alert['symbol'], alert['target'])
+
+            # 코인명에 "(첫 자리)" 마커 추가
+            coin_display = f"{alert['name']} ({alert['symbol']})"
+            if is_first:
+                coin_display = f"{alert['name']} ({alert['symbol']}) (첫 자리)"
+
             # 알람 메시지 포맷팅 (새로운 형식)
             message = (
                 f"🪙 <b>매수 목표 접근 알림</b>\n"
                 f"────────────\n"
-                f"코인명: {alert['name']} ({alert['symbol']})\n"
+                f"코인명: {coin_display}\n"
                 f"시총 순위: {alert['rank']}\n\n"
                 f"현재가: ${alert['current_price']:,.4f}\n"
                 f"매수목표: <b>{alert['target']} - ${alert['target_price']:,.4f}</b>\n"
