@@ -6,7 +6,7 @@
 기능:
 1. 00:00에 DEBUG/ANALYSIS 파일 생성
 2. 00:00에 ANALYSIS 파일에서 B1~B7 값 저장
-3. 30분 간격으로 실시간 가격과 비교하여 알람 전송
+3. 5분 간격으로 실시간 가격과 비교하여 알람 전송
 4. 중복 알람 방지 (코인별, 매수목표별 하루 1회)
 """
 
@@ -21,31 +21,21 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import subprocess
 import pathlib
-import psutil
 
-# 현재 디렉토리를 Python 경로에 추가
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-
-try:
-    from telegram_notifier import send_telegram_message
-except ImportError:
-    print(f"Error: Could not import telegram_notifier from {current_dir}")
-    print(f"Files in current directory: {os.listdir(current_dir)}")
-    raise
+# S12 디렉토리의 모듈 import
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from telegram_notifier import send_telegram_message
 
 try:
     from slack_notifier import send_slack_alert, send_slack_buy_execution_alert
 except ImportError:
-    print(f"Warning: Could not import slack_notifier. Slack 알림을 건너뜁니다.")
+    print(f"Warning: Could not import slack_notifier. Slack 알림은 건너뜁니다.")
     send_slack_alert = None
     send_slack_buy_execution_alert = None
 
 class CryptoRealtimeMonitor:
     def __init__(self):
-        # 현재 스크립트가 있는 디렉토리를 OMG 디렉토리로 설정
-        self.omg_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
+        self.omg_dir = pathlib.Path("C:/Coding/OMG")
         self.analysis_file = None
         self.monitoring_data = {}  # {symbol: {next_target, buy_levels, rank, name}}
         self.alert_history = {}  # {symbol: {target: sent_date}}
@@ -142,7 +132,7 @@ class CryptoRealtimeMonitor:
         except Exception as e:
             print(f"첫 자리 확인 실패 ({symbol} {target_level}): {e}")
             return False
-
+    
     def run_daily_update(self):
         """00:00에 실행되는 일일 업데이트"""
         print(f"[{datetime.now()}] 일일 업데이트 시작...")
@@ -203,8 +193,8 @@ class CryptoRealtimeMonitor:
             print(f"일일 업데이트 실패: {e}")
             return False
         finally:
-            # 원래 디렉토리로 복귀 (스크립트가 있는 디렉토리)
-            os.chdir(self.omg_dir)
+            # S12 디렉토리로 복귀
+            os.chdir("C:/Coding/S12")
     
     def load_monitoring_data(self):
         """ANALYSIS 파일에서 모니터링 데이터 로드"""
@@ -262,24 +252,21 @@ class CryptoRealtimeMonitor:
                     except (ValueError, TypeError):
                         h_value = 0
                 
-                # 순위 처리 (NaN 안전 처리)
+                # 순위 안전 처리 (NaN 체크)
                 rank = 0
                 if '순위' in row and pd.notna(row['순위']):
                     try:
                         rank_value = row['순위']
-                        # NaN 체크
-                        if pd.isna(rank_value):
+                        # 문자열이면 숫자로 변환 시도
+                        if isinstance(rank_value, str):
+                            rank_value = rank_value.replace(',', '').strip()
+                        # float로 변환 후 정수로 변환 (NaN 체크)
+                        import math
+                        rank_float = float(rank_value)
+                        if math.isnan(rank_float) or pd.isna(rank_float) or pd.isinf(rank_float):
                             rank = 0
                         else:
-                            # 문자열이면 숫자로 변환 시도
-                            if isinstance(rank_value, str):
-                                rank_value = rank_value.replace(',', '').strip()
-                            # float로 변환 후 정수로 변환 (NaN 체크)
-                            rank_float = float(rank_value)
-                            if pd.isna(rank_float) or pd.isinf(rank_float):
-                                rank = 0
-                            else:
-                                rank = int(rank_float)
+                            rank = int(rank_float)
                     except (ValueError, TypeError, OverflowError):
                         rank = 0
                 
@@ -298,6 +285,24 @@ class CryptoRealtimeMonitor:
         except Exception as e:
             print(f"모니터링 데이터 로드 실패: {e}")
     
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """현재가 조회 (Binance Ticker API)"""
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {"symbol": f"{symbol}USDT"}
+
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data and 'price' in data:
+                return float(data['price'])
+            return None
+
+        except Exception as e:
+            print(f"{symbol} 현재가 조회 실패: {e}")
+            return None
+
     def get_candle_low(self, symbol: str, interval: str = "5m") -> Optional[float]:
         """5분봉 저가 조회 (Binance Kline API) - 모니터링 간격에 맞춤"""
         try:
@@ -307,37 +312,17 @@ class CryptoRealtimeMonitor:
                 "interval": interval,
                 "limit": 1  # 최근 1개 봉
             }
-            
+
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
-            
+
             if data and len(data) > 0:
                 return float(data[0][3])  # 저가 (low)
             return None
-            
+
         except Exception as e:
-            print(f"{symbol} {interval}봉 저가 조회 실패: {e}")
-            return None
-    
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        """현재가 조회 (Binance Ticker API)"""
-        try:
-            url = "https://api.binance.com/api/v3/ticker/price"
-            params = {
-                "symbol": f"{symbol}USDT"
-            }
-            
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data and "price" in data:
-                return float(data["price"])
-            return None
-            
-        except Exception as e:
-            print(f"{symbol} 현재가 조회 실패: {e}")
+            print(f"{symbol} 5분봉 저가 조회 실패: {e}")
             return None
     
     def calculate_divergence(self, current_price: float, target_price: float) -> float:
@@ -347,7 +332,7 @@ class CryptoRealtimeMonitor:
         return abs((current_price - target_price) / target_price) * 100
     
     def check_buy_execution(self, coin_data: Dict) -> Optional[Dict]:
-        """5분봉 저가로 매수 실행 감지 (모니터링 간격에 맞춤)"""
+        """5분봉 저가로 매수 실행 감지"""
         symbol = coin_data['symbol']
         next_target = coin_data['next_target']
         buy_levels = coin_data['buy_levels']
@@ -374,26 +359,18 @@ class CryptoRealtimeMonitor:
                 'candle_low': candle_low,
                 'rank': coin_data['rank'],
                 'name': coin_data['name'],
-                'h_value': coin_data['h_value'],
-                'buy_levels': buy_levels  # calculate_average_buy_and_sell_price에서 필요
+                'h_value': coin_data['h_value']
             }
         
         return None
     
     def calculate_average_buy_and_sell_price(self, coin_data: Dict) -> Dict:
         """평균 매수선과 매도가 계산"""
-        # execution_data에는 'target' 키가 있고, coin_data에는 'next_target' 키가 있음
-        if 'next_target' in coin_data:
-            target = coin_data['next_target']
-        elif 'target' in coin_data:
-            target = coin_data['target']
-        else:
-            raise KeyError("coin_data must have either 'next_target' or 'target' key")
-        
+        next_target = coin_data['next_target']  # 예: "B3"
         buy_levels = coin_data['buy_levels']
         
         # 매수 단계 추출 (B3 → 3)
-        stage_num = int(target[1])
+        stage_num = int(next_target[1])
         
         # 1단계부터 현재 단계까지의 매수가들
         buy_prices = []
@@ -468,6 +445,33 @@ class CryptoRealtimeMonitor:
         
         return alerts
     
+    def format_price(self, price: float, h_value: float = None) -> str:
+        """가격을 천 단위 콤마로 포맷팅 (H값에 따라 소수점 자릿수 조정)"""
+        if price is None:
+            return ""
+        
+        # H값에 따라 소수점 자릿수 결정
+        if h_value is not None:
+            if h_value <= 1:
+                return f"{price:,.6f}"
+            elif h_value <= 10:
+                return f"{price:,.4f}"
+        
+        return f"{price:,.2f}"
+    
+    def get_sell_threshold(self, buy_level: str) -> Optional[float]:
+        """매수 레벨에 따른 매도 기준 퍼센트 반환"""
+        sell_thresholds = {
+            'B1': 7.7,
+            'B2': 17.3,
+            'B3': 24.4,
+            'B4': 37.4,
+            'B5': 52.7,
+            'B6': 79.9,
+            'B7': 98.5
+        }
+        return sell_thresholds.get(buy_level)
+    
     def send_alert(self, alert: Dict):
         """텔레그램 알람 전송"""
         try:
@@ -479,17 +483,29 @@ class CryptoRealtimeMonitor:
             if is_first:
                 coin_display = f"{alert['name']} ({alert['symbol']}) (첫 자리)"
 
+            # 가격 포맷팅 (H값 기반)
+            h_value = alert.get('h_value', 0)
+            current_price_str = self.format_price(alert['current_price'], h_value)
+            target_price_str = self.format_price(alert['target_price'], h_value)
+            h_value_str = self.format_price(h_value, h_value)
+            
+            # 매도 기준 퍼센트 가져오기
+            sell_threshold = self.get_sell_threshold(alert['target'])
+            sell_criteria_text = ""
+            if sell_threshold:
+                sell_criteria_text = f"\n매도 기준: +{sell_threshold}%"
+
             # 알람 메시지 포맷팅 (새로운 형식)
             message = (
                 f"🪙 <b>매수 목표 접근 알림</b>\n"
                 f"────────────\n"
                 f"코인명: {coin_display}\n"
                 f"시총 순위: {alert['rank']}\n\n"
-                f"현재가: ${alert['current_price']:,.4f}\n"
-                f"매수목표: <b>{alert['target']} - ${alert['target_price']:,.4f}</b>\n"
+                f"현재가: ${current_price_str}\n"
+                f"매수목표: <b>{alert['target']} - ${target_price_str}</b>{sell_criteria_text}\n"
                 f"이격도: <b>{alert['divergence']:.2f}%</b>\n"
                 f"────────────\n"
-                f"<tg-spoiler>* 기준 고점: ${alert['h_value']:,.2f}</tg-spoiler>"
+                f"<tg-spoiler>* 기준 고점: ${h_value_str}</tg-spoiler>"
             )
             
             # 텔레그램 전송 (모든 수신자에게)
@@ -498,7 +514,10 @@ class CryptoRealtimeMonitor:
             # Slack 전송 (선택적)
             slack_success = True
             if send_slack_alert:
-                slack_success = send_slack_alert(alert)
+                # alert에 is_first 정보 추가 (슬랙 메시지에서 사용)
+                alert_with_first = alert.copy()
+                alert_with_first['is_first'] = is_first
+                slack_success = send_slack_alert(alert_with_first)
             
             if telegram_success or slack_success:
                 # 알람 이력 업데이트
@@ -530,7 +549,15 @@ class CryptoRealtimeMonitor:
             
             # 현재가 조회
             current_price = self.get_current_price(execution_data['symbol'])
-            current_price_str = f"${current_price:,.4f}" if current_price else "조회실패"
+            
+            # 가격 포맷팅 (H값 기반)
+            h_value = execution_data.get('h_value', 0)
+            current_price_str = f"${self.format_price(current_price, h_value)}" if current_price else "조회실패"
+            target_price_str = self.format_price(execution_data['target_price'], h_value)
+            candle_low_str = self.format_price(execution_data['candle_low'], h_value)
+            avg_buy_price_str = self.format_price(price_data['avg_buy_price'], h_value)
+            sell_price_str = self.format_price(price_data['sell_price'], h_value)
+            h_value_str = self.format_price(h_value, h_value)
             
             # 매수 실행 메시지 포맷팅 (새로운 형식)
             message = (
@@ -538,13 +565,13 @@ class CryptoRealtimeMonitor:
                 f"────────────\n"
                 f"코인명: {execution_data['name']} ({execution_data['symbol']})\n"
                 f"시총 순위: {execution_data['rank']}\n\n"
-                f"매수 목표: {execution_data['target']} — ${execution_data['target_price']:,.2f}\n"
-                f"5분봉 저가: ${execution_data['candle_low']:,.2f}\n\n"
-                f"현재가: ${current_price:,.2f}\n"
-                f"평균매수가: ${price_data['avg_buy_price']:,.2f}\n"
-                f"예상 매도가: ${price_data['sell_price']:,.2f} (+{price_data['sell_threshold']:.1f}%)\n"
+                f"매수 목표: {execution_data['target']} — ${target_price_str}\n"
+                f"5분봉 저가: ${candle_low_str}\n\n"
+                f"현재가: {current_price_str}\n"
+                f"평균매수가: ${avg_buy_price_str}\n"
+                f"예상 매도가: ${sell_price_str} (+{price_data['sell_threshold']:.1f}%)\n"
                 f"────────────\n"
-                f"<tg-spoiler>* 기준 고점: ${execution_data['h_value']:,.2f}</tg-spoiler>"
+                f"<tg-spoiler>* 기준 고점: ${h_value_str}</tg-spoiler>"
             )
             
             # 텔레그램 전송 (모든 수신자에게)
@@ -556,20 +583,28 @@ class CryptoRealtimeMonitor:
                 slack_success = send_slack_buy_execution_alert(execution_data, price_data, current_price)
             
             if telegram_success or slack_success:
-                # 매수 실행 이력은 이미 전송 전에 저장했으므로 업데이트만 확인
-                # (중복 방지를 위해 전송 전에 저장하도록 변경됨)
+                # 매수 실행 이력 업데이트
+                today = datetime.now().strftime("%Y-%m-%d")
+                symbol = execution_data['symbol']
+                target = execution_data['target']
+                
+                if symbol not in self.alert_history:
+                    self.alert_history[symbol] = {}
+                if not isinstance(self.alert_history[symbol], dict):
+                    self.alert_history[symbol] = {}
+                
+                # 매수 실행 이력 키 (접근 알림과 구분)
+                execution_key = f"{target}_EXECUTED"
+                self.alert_history[symbol][execution_key] = today
+                self.save_alert_history()
                 
                 status = []
                 if telegram_success:
                     status.append("텔레그램")
                 if slack_success:
                     status.append("Slack")
-                symbol = execution_data['symbol']
-                target = execution_data['target']
                 print(f"매수 실행 알림 전송 완료: {symbol} {target} ({', '.join(status)})")
             else:
-                symbol = execution_data.get('symbol', 'UNKNOWN')
-                target = execution_data.get('target', 'UNKNOWN')
                 print(f"매수 실행 알림 전송 실패: {symbol} {target}")
                 
         except Exception as e:
@@ -582,9 +617,7 @@ class CryptoRealtimeMonitor:
             return
         
         print(f"[{datetime.now()}] 모니터링 사이클 시작...")
-        print(f"체크할 코인 수: {len(self.monitoring_data)}개")
         
-        alert_count = 0
         for coin_data in self.monitoring_data:
             try:
                 symbol = coin_data['symbol']
@@ -597,40 +630,24 @@ class CryptoRealtimeMonitor:
                 alerts = self.check_alert_condition(coin_data, current_price)
                 
                 # 알람 전송
-                if alerts:
-                    alert_count += len(alerts)
-                    print(f"  [{symbol}] 알람 발견: {len(alerts)}개")
                 for alert in alerts:
-                    print(f"    - {alert['target']}: 이격도 {alert['divergence']:.2f}%")
                     self.send_alert(alert)
                 
-                # 매수 실행 감지 (5분봉 저가 기준)
+                # 매수 실행 감지 (30분봉 저가 기준)
                 execution_data = self.check_buy_execution(coin_data)
                 if execution_data:
-                    # 중복 실행 알림 방지 (전송 전에 체크)
+                    # 중복 실행 알림 방지
                     today = datetime.now().strftime("%Y-%m-%d")
                     symbol = execution_data['symbol']
                     target = execution_data['target']
                     execution_key = f"{target}_EXECUTED"
                     
-                    # 중복 체크: 이미 오늘 전송했으면 스킵
-                    if (symbol in self.alert_history and 
-                        isinstance(self.alert_history[symbol], dict) and
-                        execution_key in self.alert_history[symbol] and
-                        self.alert_history[symbol][execution_key] == today):
-                        # 이미 오늘 전송했으므로 스킵
-                        continue
-                    
-                    # 전송 전에 이력에 즉시 표시 (중복 방지)
-                    if symbol not in self.alert_history:
-                        self.alert_history[symbol] = {}
-                    if not isinstance(self.alert_history[symbol], dict):
-                        self.alert_history[symbol] = {}
-                    self.alert_history[symbol][execution_key] = today
-                    self.save_alert_history()
-                    
-                    # 알람 전송
-                    self.send_buy_execution_alert(execution_data)
+                    if (symbol not in self.alert_history or 
+                        not isinstance(self.alert_history[symbol], dict) or
+                        execution_key not in self.alert_history[symbol] or
+                        self.alert_history[symbol][execution_key] != today):
+                        
+                        self.send_buy_execution_alert(execution_data)
                 
                 # API 제한 방지
                 time.sleep(0.1)
@@ -638,28 +655,7 @@ class CryptoRealtimeMonitor:
             except Exception as e:
                 print(f"{symbol} 모니터링 오류: {e}")
         
-        print(f"[{datetime.now()}] 모니터링 사이클 완료 - 알람 전송: {alert_count}개")
-    
-    def load_existing_analysis(self) -> bool:
-        """기존 ANALYSIS 파일 로드 (DEBUG 파일 재생성 없이)"""
-        try:
-            output_dir = self.omg_dir / "output"
-            analysis_files = list(output_dir.glob("coin_analysis_*.xlsx"))
-            if not analysis_files:
-                print("기존 ANALYSIS 파일이 없습니다. 일일 업데이트를 기다립니다.")
-                return False
-            
-            # 가장 최신 파일 선택
-            self.analysis_file = max(analysis_files, key=os.path.getctime)
-            print(f"기존 ANALYSIS 파일 로드: {self.analysis_file.name}")
-            
-            # ANALYSIS 파일에서 모니터링 데이터 로드
-            self.load_monitoring_data()
-            return True
-            
-        except Exception as e:
-            print(f"기존 ANALYSIS 파일 로드 실패: {e}")
-            return False
+        print(f"[{datetime.now()}] 모니터링 사이클 완료")
     
     def start_monitoring(self):
         """모니터링 시작"""
@@ -669,13 +665,13 @@ class CryptoRealtimeMonitor:
         schedule.every().day.at("00:00").do(self.run_daily_update)
         schedule.every(5).minutes.do(self.run_monitoring_cycle)  # 5분 간격으로 변경
         
-        # 기존 ANALYSIS 파일이 있으면 로드, 없으면 일일 업데이트를 기다림
-        print("기존 데이터 확인 중...")
-        if self.load_existing_analysis():
-            print("기존 데이터 로드 완료 - 모니터링 시작")
+        # 초기 실행 (테스트용)
+        print("초기 데이터 로드...")
+        if self.run_daily_update():
+            print("초기 데이터 로드 완료")
         else:
-            print("기존 데이터 없음 - 00:00 일일 업데이트를 기다립니다.")
-            print("(수동으로 업데이트하려면 run_daily_analysis.bat 실행)")
+            print("초기 데이터 로드 실패")
+            return
         
         # 메인 루프
         try:
@@ -684,133 +680,10 @@ class CryptoRealtimeMonitor:
                 time.sleep(60)  # 1분마다 스케줄 확인
         except KeyboardInterrupt:
             print("모니터링 중단")
-            # Lock 파일 정리
-            lock_file = self.omg_dir / "crypto_monitor.lock"
-            if lock_file.exists():
-                try:
-                    lock_file.unlink()
-                    print("Lock 파일 정리 완료")
-                except:
-                    pass
         except Exception as e:
             print(f"모니터링 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            # Lock 파일 정리
-            lock_file = self.omg_dir / "crypto_monitor.lock"
-            if lock_file.exists():
-                try:
-                    lock_file.unlink()
-                    print("Lock 파일 정리 완료")
-                except:
-                    pass
-            # 에러 발생 시 재시작하지 않고 종료 (외부에서 재시작 관리)
-            raise
-
-def check_existing_process():
-    """기존 실행 중인 프로세스 확인 및 종료"""
-    current_pid = os.getpid()
-    script_name = os.path.basename(__file__)
-    
-    # psutil을 사용하여 crypto_realtime_monitor.py를 실행 중인 프로세스 찾기
-    try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                if proc.info['name'] and 'python' in proc.info['name'].lower():
-                    cmdline = proc.info.get('cmdline', [])
-                    if cmdline and any('crypto_realtime_monitor' in str(arg) for arg in cmdline):
-                        proc_pid = proc.info['pid']
-                        if proc_pid != current_pid:
-                            print(f"기존 프로세스 발견 (PID: {proc_pid}), 종료합니다...")
-                            try:
-                                proc_obj = psutil.Process(proc_pid)
-                                proc_obj.terminate()
-                                proc_obj.wait(timeout=5)
-                                print(f"기존 프로세스 종료 완료 (PID: {proc_pid})")
-                            except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
-                                try:
-                                    proc_obj = psutil.Process(proc_pid)
-                                    proc_obj.kill()
-                                    print(f"기존 프로세스 강제 종료 (PID: {proc_pid})")
-                                except:
-                                    pass
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-    except Exception as e:
-        print(f"프로세스 체크 중 오류: {e}")
-
-def ensure_single_instance():
-    """단일 인스턴스 보장 (Lock 파일 사용)"""
-    lock_file = pathlib.Path(__file__).parent / "crypto_monitor.lock"
-    
-    # Lock 파일이 존재하면 기존 프로세스 확인
-    if lock_file.exists():
-        try:
-            with open(lock_file, 'r') as f:
-                old_pid = int(f.read().strip())
-            
-            # 해당 PID가 여전히 실행 중인지 확인
-            if psutil.pid_exists(old_pid):
-                try:
-                    proc = psutil.Process(old_pid)
-                    cmdline = proc.cmdline()
-                    if 'crypto_realtime_monitor' in ' '.join(cmdline):
-                        print(f"기존 프로세스가 실행 중입니다 (PID: {old_pid})")
-                        print("프로세스를 종료합니다...")
-                        proc.terminate()
-                        proc.wait(timeout=5)
-                        print("기존 프로세스 종료 완료")
-                except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
-                    pass
-        except (ValueError, FileNotFoundError):
-            pass
-    
-    # 현재 PID로 Lock 파일 생성
-    try:
-        with open(lock_file, 'w') as f:
-            f.write(str(os.getpid()))
-        print(f"Lock 파일 생성: {lock_file}")
-    except Exception as e:
-        print(f"Lock 파일 생성 실패: {e}")
 
 def main():
-    # 시작 전 중복 프로세스 확인 및 종료
-    print("=" * 60)
-    print("OMG 실시간 모니터링 시작 (중복 방지 모드)")
-    print("=" * 60)
-    
-    # 기존 프로세스 체크 및 종료
-    check_existing_process()
-    time.sleep(1)
-    
-    # 단일 인스턴스 보장
-    ensure_single_instance()
-    time.sleep(1)
-    
-    # 최종 확인: 현재 실행 중인 프로세스 수
-    try:
-        running_count = 0
-        current_pid = os.getpid()
-        for proc in psutil.process_iter(['pid', 'cmdline']):
-            try:
-                cmdline = proc.info.get('cmdline', [])
-                if cmdline and any('crypto_realtime_monitor' in str(arg) for arg in cmdline):
-                    if proc.info['pid'] != current_pid:
-                        running_count += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        
-        if running_count > 0:
-            print(f"⚠️ 경고: {running_count}개의 추가 프로세스가 실행 중입니다")
-        else:
-            print("✅ 단일 인스턴스 확인 완료")
-    except Exception as e:
-        print(f"프로세스 확인 오류: {e}")
-    
-    print("=" * 60)
-    print()
-    
-    # 모니터링 시작
     monitor = CryptoRealtimeMonitor()
     monitor.start_monitoring()
 
